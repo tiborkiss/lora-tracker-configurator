@@ -83,7 +83,12 @@ workshop PC you then only connect each device and apply.
     one PC and run this once: each file is matched to its board by USB
     serial and applied automatically. The very first time (or when a board
     is new/replaced) the tool asks which port is which, records the
-    binding, and every later run needs no questions.
+    binding, and every later run needs no questions. You answer by list
+    number — the serial shown is informational. Easiest: plug one board at
+    a time; a single unclaimed port is assigned without asking. The port
+    list is a snapshot — do not swap boards while the prompt is open;
+    rerun the menu instead. A wrong first-time assignment is fixed by
+    deleting the `usb_serial` field from the two files and re-running.
 0. Exit.
 
 Every write reconnects and reads back; a mismatch is reported as an error but

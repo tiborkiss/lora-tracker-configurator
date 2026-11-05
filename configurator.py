@@ -463,14 +463,20 @@ def apply_pair(device_path, shared):
         if not free:
             print('No unclaimed port for', path.name, '; connect it and run again.')
             continue
-        print(f'Assign {path.name} ({kind}) — pick the connected device:')
         entries = sorted(free.items())
-        for i, (s, dev) in enumerate(entries, 1):
-            print(f'{i}. {dev} (USB serial {s})')
-        pick = int(input('Device number: '))
-        if pick < 1 or pick > len(entries):
-            raise ValueError('Invalid selection')
-        serial, port = entries[pick - 1]
+        if len(entries) == 1:
+            serial, port = entries[0]
+            print(f'Only one unclaimed port — assigning {path.name} to {port}.')
+        else:
+            # The serial is informational; answer with the list number. The
+            # list is a snapshot: if boards are swapped, rerun this menu.
+            print(f'Assign {path.name} ({kind}) — pick the connected device:')
+            for i, (s, dev) in enumerate(entries, 1):
+                print(f'{i}. {dev} (USB serial {s})')
+            pick = int(input('Device number: '))
+            if pick < 1 or pick > len(entries):
+                raise ValueError('Invalid selection')
+            serial, port = entries[pick - 1]
         apply_one(port, serial, kind, device, shared, path)
         claimed.add(serial)
     print('Pair application finished.')

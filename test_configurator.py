@@ -303,8 +303,9 @@ class PairApplyTests(unittest.TestCase):
             device['usb_serial'] = serial
             c.save_device(path, device)
 
-        # beacon picks SER1; afterwards only SER2 is unclaimed for the handheld
-        answers = iter(['1', '1'])
+        # beacon: two free ports -> prompt, pick SER1; handheld: one free
+        # port remains -> assigned automatically without a prompt
+        answers = iter(['1'])
         with patch.object(c, 'connected_serials',
                           return_value={'SER1': '/dev/ttyA', 'SER2': '/dev/ttyB'}), \
              patch.object(c, 'apply_one', fake_apply_one), \
@@ -351,7 +352,7 @@ class PairApplyTests(unittest.TestCase):
             apply_all.assert_called_once_with('/dev/ttyA', 'beacon', device, self.shared)
         self.assertEqual(c.load_device(self.beacon)['usb_serial'], 'SER1')
 
-    def test_missing_sibling_prompts_for_the_single_connected_port(self):
+    def test_missing_sibling_auto_assigns_the_single_connected_port(self):
         calls = []
 
         def fake_apply_one(port, serial, kind, device, shared, path):
@@ -361,7 +362,7 @@ class PairApplyTests(unittest.TestCase):
 
         with patch.object(c, 'connected_serials', return_value={'SER1': '/dev/ttyA'}), \
              patch.object(c, 'apply_one', fake_apply_one), \
-             patch('builtins.input', lambda _: '1'):
+             patch('builtins.input', side_effect=AssertionError('no prompt expected')):
             c.apply_pair(self.beacon, self.shared)
         self.assertEqual(calls, ['1-beacon.json'])
         self.assertEqual(c.load_device(self.beacon)['usb_serial'], 'SER1')
