@@ -376,26 +376,75 @@ def confirmed(message):
     return input(message + ' [y/N]: ').strip().lower() == 'y'
 
 
-def reconnect(port, action, verify):
-    iface = connect(port)
-    try:
-        action(iface)
-    finally:
-        iface.close()
-    # Local admin writes have no device acknowledgement; read from a fresh session.
+def reconnect(port, action, verify, attempts=3):
+    """Apply, then verify through a fresh session, retrying whole steps:
+    config writes reboot the device, so the next connect can arrive early."""
     import time
-    time.sleep(3)
-    iface = connect(port)
-    try:
-        if not verify(iface):
-            raise RuntimeError('Read-back did not match; the device may be partially configured')
-    finally:
-        iface.close()
-    print('Read-back verified.')
+    last = None
+    for _ in range(attempts):
+        try:
+            iface = connect(port)
+            try:
+                action(iface)
+            finally:
+                iface.close()
+            # Local admin writes have no device acknowledgement; read from a fresh session.
+            time.sleep(3)
+            iface = connect(port)
+            try:
+                if not verify(iface):
+                    raise RuntimeError('Read-back did not match; the device may be partially configured')
+            finally:
+                iface.close()
+        except Exception as exc:  # reboots make connects flaky; retry the step
+            last = exc
+            time.sleep(5)
+            continue
+        print('Read-back verified.')
+        return
+    raise RuntimeError(f'Could not complete step on {port}: {last}')
 
 
-def apply_all(port, kind, device, shared):
-    """Apply every property of the device file (plus shared settings)."""
+def connect_serial(serial):
+    """Resolve the current port path of a USB serial and connect to it.
+    The tty index changes across the device's own reboots; the serial does not."""
+    path = connected_serials().get(serial)
+    if not path:
+        raise OSError(f'device with USB serial {serial} is not connected')
+    return connect(path)
+
+
+def reconnect_serial(serial, action, verify, attempts=6):
+    """reconnect() for a USB serial: re-resolves the port path on every
+    attempt, waiting out reboots and re-enumerations."""
+    import time
+    last = None
+    for _ in range(attempts):
+        try:
+            iface = connect_serial(serial)
+            try:
+                action(iface)
+            finally:
+                iface.close()
+            time.sleep(3)
+            iface = connect_serial(serial)
+            try:
+                if not verify(iface):
+                    raise RuntimeError('Read-back did not match; the device may be partially configured')
+            finally:
+                iface.close()
+        except Exception as exc:
+            last = exc
+            time.sleep(5)
+            continue
+        print('Read-back verified.')
+        return
+    raise RuntimeError(f'Could not complete step on device {serial}: {last}')
+
+
+def apply_all(serial, kind, device, shared):
+    """Apply every property of the device file (plus shared settings) to the
+    device with this USB serial; the port path is re-resolved per step."""
     slot = shared['frequency_slot']
     steps = [('radio/rotary profile',
               lambda i: update_profile(i.localNode, slot),
@@ -425,14 +474,14 @@ def apply_all(port, kind, device, shared):
                       i.getCannedMessage() == messages))
     for label, action, verify in steps:
         print('Applying', label, '…')
-        reconnect(port, action, verify)
+        reconnect_serial(serial, action, verify)
     print('All settings applied and read-back verified.')
 
 
-def apply_one(port, usb_serial, kind, device, shared, path):
+def apply_one(serial, kind, device, shared, path):
     """Apply one device file and remember which USB serial it belongs to."""
-    apply_all(port, kind, device, shared)
-    device['usb_serial'] = usb_serial
+    apply_all(serial, kind, device, shared)
+    device['usb_serial'] = serial
     save_device(path, device)
 
 
@@ -453,7 +502,7 @@ def apply_pair(device_path, shared):
         serial = device.get('usb_serial')
         if serial and serial in ports:
             print(f'{path.name} matched to {ports[serial]} by USB serial.')
-            apply_one(ports[serial], serial, kind, device, shared, path)
+            apply_one(serial, kind, device, shared, path)
             claimed.add(serial)
             continue
         if serial:
@@ -477,7 +526,7 @@ def apply_pair(device_path, shared):
             if pick < 1 or pick > len(entries):
                 raise ValueError('Invalid selection')
             serial, port = entries[pick - 1]
-        apply_one(port, serial, kind, device, shared, path)
+        apply_one(serial, kind, device, shared, path)
         claimed.add(serial)
     print('Pair application finished.')
 
@@ -491,35 +540,50 @@ def enter_dfu(port):
     print('Rebooted into the bootloader. Copy the application .uf2 onto the MESHBOOT drive when it appears.')
 
 
-def resolve_device_path(argv):
+def resolve_child_number(argv):
     number = argv[1] if len(argv) > 1 else None
-    kind = argv[2] if len(argv) > 2 else None
-    if kind and kind not in ('handheld', 'beacon'):
-        raise ValueError('Second argument must be handheld or beacon')
     if not number:
         number = input('Child number: ').strip()
     if not re.fullmatch(r'[0-9]+', number):
         raise ValueError('Child number must be numeric')
-    number = str(int(number))
-    if kind:
-        return LOCAL / f'{number}-{kind}.json'
-    existing = [p for p in (LOCAL / f'{number}-handheld.json', LOCAL / f'{number}-beacon.json') if p.exists()]
-    if len(existing) == 1:
-        return existing[0]
-    asked = input("Which device — handheld (in the child's hand) or beacon (GPS)? ").strip().lower()
-    if asked not in ('handheld', 'beacon'):
-        raise ValueError('Enter handheld or beacon')
-    return LOCAL / f'{number}-{asked}.json'
+    return str(int(number))
 
 
 def main(argv=None):
     argv = sys.argv if argv is None else argv
     try:
-        device_path = resolve_device_path(argv)
+        number = resolve_child_number(argv)
+        kind_arg = argv[2] if len(argv) > 2 else None
+        if kind_arg and kind_arg not in ('handheld', 'beacon'):
+            raise ValueError('Second argument must be handheld or beacon')
         shared = load_shared()
-        device = load_device(device_path) if device_path.exists() else prompt_device(device_path)
-        kind = device_kind(device_path)
-        print(f'\nDevice {device_path.stem} ({kind}); secrets: track/family in this file, group in shared.json')
+        candidates = {kind: LOCAL / f'{number}-{kind}.json' for kind in ('beacon', 'handheld')}
+        session = {'path': None, 'device': None, 'kind': None}
+
+        def open_device(kind):
+            path = candidates[kind]
+            device = load_device(path) if path.exists() else prompt_device(path)
+            session.update(path=path, device=device, kind=device_kind(path))
+
+        def ensure_device():
+            """Resolve which file an action targets; both files existing is fine."""
+            if session['device'] is None:
+                asked = input("Which device — handheld (in the child's hand) or beacon (GPS)? ").strip().lower()
+                if asked not in candidates:
+                    raise ValueError('Enter handheld or beacon')
+                open_device(asked)
+            return session
+
+        if kind_arg:
+            open_device(kind_arg)
+        else:
+            existing = [p for p in candidates.values() if p.exists()]
+            if len(existing) == 1:
+                open_device(device_kind(existing[0]))
+
+        label = (f"device {session['path'].stem} ({session['kind']})" if session['device'] is not None
+                 else f'pair {number} (beacon + handheld)')
+        print(f'\nChild {number}: {label}; secrets: pair keys in device files, group in shared.json')
         while True:
             print('\n1 Create group key (once)  2 Configure channel  3 Export track QR  4 Export family QR')
             print('5 Change name  6 Bluetooth on/off  7 Canned messages selector  8 Radio/rotary profile')
@@ -535,23 +599,27 @@ def main(argv=None):
                     print('Group key saved in shared.json; generate it once — every device uses the same one.')
                     continue
                 port = None
+                dev = None
                 if choice in ('2', '3', '5', '6', '7', '8', '9', '10'):
+                    dev = ensure_device()
                     selected = choose_port()
                     port = selected.device
+                elif choice == '4':
+                    dev = ensure_device()
                 if choice == '2':
-                    options = [label for _, label, *_ in channel_plan(kind, device, shared)]
+                    options = [label for _, label, *_ in channel_plan(dev['kind'], dev['device'], shared)]
                     if shared.get('public_channel'):
                         options.append('public')
                     chosen = input(f"Channel ({', '.join(options)}): ").strip().lower()
                     if chosen == 'public':
-                        if not confirmed(f'Apply the public channel to index {public_index(kind)} on {port}?'):
+                        if not confirmed(f'Apply the public channel to index {public_index(dev["kind"])} on {port}?'):
                             continue
-                        index = public_index(kind)
+                        index = public_index(dev['kind'])
                         reconnect(port, lambda i: apply_public_channel(i.localNode, index),
                                   lambda i: public_channel_matches(i.localNode, index))
                         continue
                     plan = {label: (idx, name, key, precision)
-                            for idx, label, name, key, precision in channel_plan(kind, device, shared)}
+                            for idx, label, name, key, precision in channel_plan(dev['kind'], dev['device'], shared)}
                     if chosen not in plan:
                         raise ValueError(f'Choose one of: {", ".join(options)}')
                     index, name, key, precision = plan[chosen]
@@ -561,26 +629,26 @@ def main(argv=None):
                     reconnect(port, lambda i: update_channel(i.localNode, index, name, key, precision),
                               lambda i: channel_matches(i.localNode, index, name, key, precision))
                 elif choice == '3':
-                    key = get_key(device, 'track_key')
+                    key = get_key(dev['device'], 'track_key')
                     iface = connect(port)
                     try:
                         url = pair_url(iface.localNode, key)
                     finally:
                         iface.close()
-                    image_path = LOCAL / f'{device_path.stem}-track-qr.png'
+                    image_path = LOCAL / f"{dev['path'].stem}-track-qr.png"
                     replace = image_path.exists()
                     if replace and not confirmed('Replace the existing private QR?'):
                         continue
                     store_qr(url, image_path, replace=replace)
                     print('Saved private track-only QR to', image_path, '(contains the channel secret).')
                 elif choice == '4':
-                    if kind != 'handheld':
+                    if dev['kind'] != 'handheld':
                         raise ValueError('The family channel lives on the handheld file')
-                    image_path = LOCAL / f'{device_path.stem}-family-qr.png'
+                    image_path = LOCAL / f"{dev['path'].stem}-family-qr.png"
                     replace = image_path.exists()
                     if replace and not confirmed('Replace the existing family QR?'):
                         continue
-                    store_qr(family_url(device, shared), image_path, replace=replace)
+                    store_qr(family_url(dev['device'], shared), image_path, replace=replace)
                     print('Saved family QR to', image_path, '(contains the family secret; give it to the parents).')
                 elif choice == '5':
                     long_name = input('Long name: ').strip()
@@ -590,16 +658,16 @@ def main(argv=None):
                         raise ValueError('Names exceed device limits')
                     reconnect(port, lambda i: i.localNode.setOwner(long_name, short_name),
                               lambda i: i.getLongName() == long_name and i.getShortName() == short_name)
-                    device.update(long_name=long_name, short_name=short_name)
-                    save_device(device_path, device)
+                    dev['device'].update(long_name=long_name, short_name=short_name)
+                    save_device(dev['path'], dev['device'])
                 elif choice == '6':
                     state = input('Enable Bluetooth? [y/n]: ').strip().lower()
                     if state not in ('y', 'n'):
                         raise ValueError('Enter y or n')
                     enabled = state == 'y'
                     reconnect(port, lambda i: set_bluetooth(i, enabled), lambda i: bluetooth_matches(i, enabled))
-                    device['bluetooth'] = enabled
-                    save_device(device_path, device)
+                    dev['device']['bluetooth'] = enabled
+                    save_device(dev['path'], dev['device'])
                 elif choice == '7':
                     sets = load_shared_messages()
                     if not sets:
@@ -612,8 +680,8 @@ def main(argv=None):
                     reconnect(port, lambda i: set_canned(i, messages),
                               lambda i: i.localNode.moduleConfig.canned_message.enabled and
                               i.getCannedMessage() == messages)
-                    device['canned'] = chosen
-                    save_device(device_path, device)
+                    dev['device']['canned'] = chosen
+                    save_device(dev['path'], dev['device'])
                 elif choice == '8':
                     slot = shared['frequency_slot']
                     if not confirmed(f'Set EU_868, LONG_FAST slot {slot} and rotary pins 9/10/16?'):
@@ -625,14 +693,16 @@ def main(argv=None):
                 elif choice == '10':
                     if not confirmed('Apply every setting from the JSON files?'):
                         continue
-                    apply_one(port, selected.serial_number, kind, device, shared, device_path)
+                    apply_one(selected.serial_number, dev['kind'], dev['device'], shared, dev['path'])
                 elif choice == '11':
+                    if session['path'] is None and not any(p.exists() for p in candidates.values()):
+                        raise ValueError('No device files yet; run any device menu first to create them')
                     if not confirmed('Apply the pair files to the connected devices (auto-detected)?'):
                         continue
-                    apply_pair(device_path, shared)
+                    apply_pair(session['path'] or candidates['beacon'], shared)
                 else:
                     print('Unknown choice.')
-            except (OSError, ValueError, RuntimeError, KeyError, IndexError) as exc:
+            except Exception as exc:  # device stacks raise arbitrary types
                 print('Could not complete operation:', exc, file=sys.stderr)
     except (OSError, ValueError, KeyError) as exc:
         print('Could not start:', exc, file=sys.stderr)

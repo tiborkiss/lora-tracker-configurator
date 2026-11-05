@@ -226,19 +226,19 @@ class ApplyAllTests(unittest.TestCase):
                 return original(*args, **kwargs)
             return wrapper
 
-        def fake_reconnect(port, action, verify):
+        def fake_reconnect(serial, action, verify):
             action(iface)
             self.assertTrue(verify(iface), f'verify failed after {calls[-1]}')
 
         with patch.object(c, 'connect', return_value=iface), \
-             patch.object(c, 'reconnect', fake_reconnect), \
+             patch.object(c, 'reconnect_serial', fake_reconnect), \
              patch('time.sleep'), \
              patch.object(c, 'update_profile', wrap('profile', c.update_profile)), \
              patch.object(c, 'update_channel', wrap('channel', c.update_channel)), \
              patch.object(c, 'apply_public_channel', wrap('public', c.apply_public_channel)), \
              patch.object(c, 'set_bluetooth', wrap('bluetooth', c.set_bluetooth)), \
              patch.object(c, 'set_canned', wrap('canned', c.set_canned)):
-            c.apply_all('x', kind, device, shared)
+            c.apply_all('SER1', kind, device, shared)
         return calls, iface
 
     def test_handheld_covers_track_family_group_name_bluetooth_canned(self):
@@ -298,8 +298,8 @@ class PairApplyTests(unittest.TestCase):
     def test_first_run_assigns_ports_and_records_serials(self):
         calls = []
 
-        def fake_apply_one(port, serial, kind, device, shared, path):
-            calls.append((path.name, port, serial, kind))
+        def fake_apply_one(serial, kind, device, shared, path):
+            calls.append((path.name, serial, kind))
             device['usb_serial'] = serial
             c.save_device(path, device)
 
@@ -311,8 +311,8 @@ class PairApplyTests(unittest.TestCase):
              patch.object(c, 'apply_one', fake_apply_one), \
              patch('builtins.input', lambda _: next(answers)):
             c.apply_pair(self.beacon, self.shared)
-        self.assertEqual(calls, [('1-beacon.json', '/dev/ttyA', 'SER1', 'beacon'),
-                                 ('1-handheld.json', '/dev/ttyB', 'SER2', 'handheld')])
+        self.assertEqual(calls, [('1-beacon.json', 'SER1', 'beacon'),
+                                 ('1-handheld.json', 'SER2', 'handheld')])
         self.assertEqual(c.load_device(self.beacon)['usb_serial'], 'SER1')
         self.assertEqual(c.load_device(self.handheld)['usb_serial'], 'SER2')
 
@@ -326,11 +326,11 @@ class PairApplyTests(unittest.TestCase):
         calls = []
         with patch.object(c, 'connected_serials',
                           return_value={'SER1': '/dev/ttyA', 'SER2': '/dev/ttyB'}), \
-             patch.object(c, 'apply_one', lambda *a: calls.append((a[5].name, a[0]))), \
+             patch.object(c, 'apply_one', lambda *a: calls.append((a[4].name, a[0]))), \
              patch('builtins.input', side_effect=AssertionError('no prompt expected')):
             c.apply_pair(self.beacon, self.shared)
-        self.assertEqual(calls, [('1-beacon.json', '/dev/ttyA'),
-                                 ('1-handheld.json', '/dev/ttyB')])
+        self.assertEqual(calls, [('1-beacon.json', 'SER1'),
+                                 ('1-handheld.json', 'SER2')])
 
     def test_bound_but_disconnected_device_is_skipped(self):
         device = c.load_device(self.beacon)
@@ -341,21 +341,21 @@ class PairApplyTests(unittest.TestCase):
         c.save_device(self.handheld, device)
         calls = []
         with patch.object(c, 'connected_serials', return_value={'SER2': '/dev/ttyB'}), \
-             patch.object(c, 'apply_one', lambda *a: calls.append(a[5].name)):
+             patch.object(c, 'apply_one', lambda *a: calls.append(a[4].name)):
             c.apply_pair(self.beacon, self.shared)
         self.assertEqual(calls, ['1-handheld.json'])
 
     def test_apply_one_records_serial_after_success(self):
         device = c.load_device(self.beacon)
         with patch.object(c, 'apply_all') as apply_all:
-            c.apply_one('/dev/ttyA', 'SER1', 'beacon', device, self.shared, self.beacon)
-            apply_all.assert_called_once_with('/dev/ttyA', 'beacon', device, self.shared)
+            c.apply_one('SER1', 'beacon', device, self.shared, self.beacon)
+            apply_all.assert_called_once_with('SER1', 'beacon', device, self.shared)
         self.assertEqual(c.load_device(self.beacon)['usb_serial'], 'SER1')
 
     def test_missing_sibling_auto_assigns_the_single_connected_port(self):
         calls = []
 
-        def fake_apply_one(port, serial, kind, device, shared, path):
+        def fake_apply_one(serial, kind, device, shared, path):
             calls.append(path.name)
             device['usb_serial'] = serial
             c.save_device(path, device)
@@ -406,6 +406,23 @@ class ReadbackTests(unittest.TestCase):
         with patch.object(c, 'connect', side_effect=[Fake(), Fake()]), patch('time.sleep'):
             with self.assertRaises(RuntimeError):
                 c.reconnect('test', lambda _: None, lambda _: False)
+
+    def test_reconnect_serial_re_resolves_after_reboot(self):
+        class Fake:
+            localNode = None
+
+            def close(self):
+                pass
+        # First resolve finds nothing (device rebooting), then two connects.
+        resolves = iter([{}, {'SER1': '/dev/ttyX'}, {'SER1': '/dev/ttyX'}])
+        with patch.object(c, 'connected_serials', side_effect=lambda: next(resolves)), \
+             patch.object(c, 'connect', side_effect=[Fake(), Fake()]), patch('time.sleep'):
+            c.reconnect_serial('SER1', lambda _: None, lambda _: True)
+
+    def test_reconnect_serial_exhausts_attempts_when_absent(self):
+        with patch.object(c, 'connected_serials', return_value={}), patch('time.sleep'):
+            with self.assertRaises(RuntimeError):
+                c.reconnect_serial('SER1', lambda _: None, lambda _: True, attempts=2)
 
 
 if __name__ == '__main__':
