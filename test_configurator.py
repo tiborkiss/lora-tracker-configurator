@@ -460,6 +460,47 @@ class PortSelectionTests(unittest.TestCase):
             self.assertEqual(c.load_device(candidates['handheld'])['usb_serial'], 'SER2')
 
 
+class SafeCloseTests(unittest.TestCase):
+    def test_safe_close_survives_raising_close(self):
+        class Iface:
+            stream = None
+
+            def close(self):
+                raise RuntimeError('port gone')
+
+        c.safe_close(Iface(), timeout=0.1)  # must not raise
+
+    def test_safe_close_closes_the_stream_first(self):
+        events = []
+
+        class Stream:
+            def close(self):
+                events.append('stream')
+
+        class Iface:
+            stream = Stream()
+
+            def close(self):
+                events.append('iface')
+
+        c.safe_close(Iface(), timeout=1.0)
+        self.assertEqual(events[0], 'stream')
+        self.assertIn('iface', events)
+
+    def test_safe_close_returns_when_close_hangs(self):
+        import threading
+        stuck = threading.Event()
+
+        class Iface:
+            stream = None
+
+            def close(self):
+                stuck.wait()  # simulate tcdrain on a dead port
+
+        c.safe_close(Iface(), timeout=0.2)  # returns despite the hang
+        stuck.set()
+
+
 class EnterDfuTests(unittest.TestCase):
     def test_enter_dfu_calls_node(self):
         entered = []

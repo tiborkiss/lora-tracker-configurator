@@ -390,6 +390,33 @@ def confirmed(message):
     return ask(message + ' [y/N]: ').strip().lower() == 'y'
 
 
+def safe_close(iface, timeout=5.0):
+    """close() that cannot hang. The library's close() flushes and sends a
+    farewell packet, which blocks forever when the board just rebooted or
+    vanished; closing the serial stream first unsticks any drain, and the
+    remaining library close runs under a watchdog thread."""
+    import threading
+
+    def attempt():
+        try:
+            iface._wantExit = True  # ask the reader thread to stop
+        except Exception:
+            pass
+        try:
+            if getattr(iface, 'stream', None) is not None:
+                iface.stream.close()
+        except Exception:
+            pass
+        try:
+            iface.close()  # direct call: safe_close must not recurse
+        except Exception:
+            pass
+
+    worker = threading.Thread(target=attempt, daemon=True)
+    worker.start()
+    worker.join(timeout)
+
+
 def reconnect(port, action, verify, attempts=3):
     """Apply, then verify through a fresh session, retrying whole steps:
     config writes reboot the device, so the next connect can arrive early."""
@@ -401,7 +428,7 @@ def reconnect(port, action, verify, attempts=3):
             try:
                 action(iface)
             finally:
-                iface.close()
+                safe_close(iface)
             # Local admin writes have no device acknowledgement; read from a fresh session.
             time.sleep(3)
             iface = connect(port)
@@ -409,7 +436,7 @@ def reconnect(port, action, verify, attempts=3):
                 if not verify(iface):
                     raise RuntimeError('Read-back did not match; the device may be partially configured')
             finally:
-                iface.close()
+                safe_close(iface)
         except Exception as exc:  # reboots make connects flaky; retry the step
             last = exc
             time.sleep(5)
@@ -439,14 +466,14 @@ def reconnect_serial(serial, action, verify, attempts=6):
             try:
                 action(iface)
             finally:
-                iface.close()
+                safe_close(iface)
             time.sleep(3)
             iface = connect_serial(serial)
             try:
                 if not verify(iface):
                     raise RuntimeError('Read-back did not match; the device may be partially configured')
             finally:
-                iface.close()
+                safe_close(iface)
         except Exception as exc:
             last = exc
             time.sleep(5)
@@ -509,7 +536,7 @@ def port_names(entries):
             try:
                 names[serial] = iface.getLongName() or '?'
             finally:
-                iface.close()
+                safe_close(iface)
         except Exception:
             names[serial] = 'unreachable'
     return names
@@ -602,7 +629,7 @@ def enter_dfu(port):
     try:
         iface.localNode.enterDFUMode()
     finally:
-        iface.close()
+        safe_close(iface)
     print('Rebooted into the bootloader. Copy the application .uf2 onto the MESHBOOT drive when it appears.')
 
 
@@ -711,7 +738,7 @@ def main(argv=None):
                     try:
                         url = pair_url(iface.localNode, key)
                     finally:
-                        iface.close()
+                        safe_close(iface)
                     image_path = LOCAL / f"{dev['path'].stem}-track-qr.png"
                     replace = image_path.exists()
                     if replace and not confirmed('Replace the existing private QR?'):
