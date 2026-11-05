@@ -391,17 +391,34 @@ def confirmed(message):
 
 
 def safe_close(iface, timeout=5.0):
-    """close() that cannot hang. The library's close() flushes and sends a
-    farewell packet, which blocks forever when the board just rebooted or
-    vanished; closing the serial stream first unsticks any drain, and the
-    remaining library close runs under a watchdog thread."""
+    """close() that cannot hang and keeps the library threads quiet.
+    The stock close() writes a farewell packet (blocking flush) while the
+    heartbeat timer and reader thread may still be writing; instead: stop
+    the heartbeat, let the reader exit on _wantExit, then release the
+    stream and finish the library close under a watchdog."""
     import threading
+
+    def cancel_heartbeat():
+        try:
+            timer = getattr(iface, 'heartbeatTimer', None)
+            if timer is not None:
+                timer.cancel()
+        except Exception:
+            pass
 
     def attempt():
         try:
-            iface._wantExit = True  # ask the reader thread to stop
+            iface._wantExit = True  # the reader checks this each 0.5 s read cycle
         except Exception:
             pass
+        cancel_heartbeat()
+        rx = getattr(iface, '_rxThread', None)
+        if rx is not None and rx is not threading.current_thread():
+            try:
+                rx.join(1.5)
+            except Exception:
+                pass
+        cancel_heartbeat()  # the reader may have re-armed it just before exiting
         try:
             if getattr(iface, 'stream', None) is not None:
                 iface.stream.close()
@@ -803,11 +820,13 @@ def main(argv=None):
                         continue
                     apply_one(selected.serial_number, dev['kind'], dev['device'], shared, dev['path'])
                 elif choice == '11':
-                    if session['path'] is None and not any(p.exists() for p in candidates.values()):
-                        raise ValueError('No device files yet; run any device menu first to create them')
+                    anchor = session['path'] or candidates['beacon']
+                    for path in (anchor, sibling_path(anchor)):
+                        if not path.exists() and confirmed(f'{path.name} does not exist — create it now?'):
+                            prompt_device(path)
                     if not confirmed('Apply the pair files to the connected devices (auto-detected)?'):
                         continue
-                    apply_pair(session['path'] or candidates['beacon'], shared)
+                    apply_pair(anchor, shared)
                 else:
                     print('Unknown choice.')
             except Exception as exc:  # device stacks raise arbitrary types

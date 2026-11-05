@@ -461,6 +461,32 @@ class PortSelectionTests(unittest.TestCase):
 
 
 class SafeCloseTests(unittest.TestCase):
+    def test_safe_close_stops_heartbeat_and_reader_before_the_stream(self):
+        events = []
+
+        class Timer:
+            def cancel(self):
+                events.append('heartbeat')
+
+        class RX:
+            def join(self, timeout=None):
+                events.append('reader')
+
+        class Stream:
+            def close(self):
+                events.append('stream')
+
+        class Iface:
+            heartbeatTimer = Timer()
+            _rxThread = RX()
+            stream = Stream()
+
+            def close(self):
+                events.append('iface')
+
+        c.safe_close(Iface(), timeout=1.0)
+        self.assertEqual(events, ['heartbeat', 'reader', 'heartbeat', 'stream', 'iface'])
+
     def test_safe_close_survives_raising_close(self):
         class Iface:
             stream = None
