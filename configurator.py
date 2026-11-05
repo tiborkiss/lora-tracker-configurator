@@ -347,12 +347,17 @@ def public_index(kind):
     return 3 if kind == 'handheld' else 1
 
 
-def choose_port():
-    """Return the selected pyserial port object (device path + USB serial)."""
+def usb_ports():
+    """Only USB serial boards — legacy /dev/ttyS* ports are noise."""
     from serial.tools.list_ports import comports
-    ports = list(comports())
+    return [p for p in comports() if p.serial_number or p.vid]
+
+
+def choose_port():
+    """Return the selected USB serial port object (device path + USB serial)."""
+    ports = usb_ports()
     if not ports:
-        raise ValueError('No serial ports found; connect a device')
+        raise ValueError('No USB serial ports found; connect a device')
     for i, port in enumerate(ports, 1):
         print(f'{i}. {port.device} — {port.description} (USB serial: {port.serial_number or "unknown"})')
     choice = int(ask('Select the connected device number: '))
@@ -510,6 +515,40 @@ def port_names(entries):
     return names
 
 
+def resolve_selected(selected, session, candidates):
+    """Guard a single-device operation against the wrong board.
+
+    The selected port's USB serial decides: a board already bound to the
+    other file of the pair switches the session to it; a board bound
+    nowhere is offered as a first binding; a board that contradicts the
+    session's own binding is refused.
+    """
+    serial = selected.serial_number
+    if not serial:
+        return
+    if session['device'].get('usb_serial') == serial:
+        return
+    for kind, path in candidates.items():
+        if path.exists() and path != session['path'] and load_device(path).get('usb_serial') == serial:
+            print(f'That board belongs to {path.name}; switching to it.')
+            session.update(path=path, device=load_device(path), kind=kind)
+            return
+    bound = session['device'].get('usb_serial')
+    if bound:
+        sibling = candidates['handheld' if session['kind'] == 'beacon' else 'beacon']
+        if not sibling.exists() and confirmed(
+                f'Board {serial} is not the one bound to {session["path"].name}. Create {sibling.name} for it now?'):
+            device = prompt_device(sibling)
+            device['usb_serial'] = serial
+            save_device(sibling, device)
+            session.update(path=sibling, device=device, kind=device_kind(sibling))
+            return
+        raise ValueError(f'{selected.device} is board {serial}, but {session["path"].name} belongs to {bound}. '
+                         'Plug that board instead.')
+    if not confirmed(f'Board {serial} is not yet bound; apply {session["path"].name} to it?'):
+        raise ValueError('Operation aborted; no changes made.')
+
+
 def apply_pair(device_path, shared):
     """Apply both files of a pair, matching plugged-in devices by USB serial.
 
@@ -608,11 +647,19 @@ def main(argv=None):
             if len(existing) == 1:
                 open_device(device_kind(existing[0]))
 
+        def remember(serial):
+            """Bind the session file to this board after a successful op."""
+            if serial and not session['device'].get('usb_serial'):
+                session['device']['usb_serial'] = serial
+                save_device(session['path'], session['device'])
+
         label = (f"device {session['path'].stem} ({session['kind']})" if session['device'] is not None
                  else f'pair {number} (beacon + handheld)')
         print(f'\nChild {number}: {label}; secrets: pair keys in device files, group in shared.json')
         while True:
-            print('\n1 Create group key (once)  2 Configure channel  3 Export track QR  4 Export family QR')
+            context = session['path'].name if session['path'] else f'pair {number}'
+            print(f'\n[{context}]')
+            print('1 Create group key (once)  2 Configure channel  3 Export track QR  4 Export family QR')
             print('5 Change name  6 Bluetooth on/off  7 Canned messages selector  8 Radio/rotary profile')
             print('9 Enter DFU mode  10 Apply all (this device)  11 Apply all (pair, auto-detect)  0 Exit')
             try:
@@ -631,6 +678,7 @@ def main(argv=None):
                     dev = ensure_device()
                     selected = choose_port()
                     port = selected.device
+                    resolve_selected(selected, session, candidates)
                 elif choice == '4':
                     dev = ensure_device()
                 if choice == '2':
@@ -644,6 +692,7 @@ def main(argv=None):
                         index = public_index(dev['kind'])
                         reconnect(port, lambda i: apply_public_channel(i.localNode, index),
                                   lambda i: public_channel_matches(i.localNode, index))
+                        remember(selected.serial_number)
                         continue
                     plan = {label: (idx, name, key, precision)
                             for idx, label, name, key, precision in channel_plan(dev['kind'], dev['device'], shared)}
@@ -655,6 +704,7 @@ def main(argv=None):
                         continue
                     reconnect(port, lambda i: update_channel(i.localNode, index, name, key, precision),
                               lambda i: channel_matches(i.localNode, index, name, key, precision))
+                    remember(selected.serial_number)
                 elif choice == '3':
                     key = get_key(dev['device'], 'track_key')
                     iface = connect(port)
@@ -687,6 +737,7 @@ def main(argv=None):
                               lambda i: i.getLongName() == long_name and i.getShortName() == short_name)
                     dev['device'].update(long_name=long_name, short_name=short_name)
                     save_device(dev['path'], dev['device'])
+                    remember(selected.serial_number)
                 elif choice == '6':
                     state = ask('Enable Bluetooth? [y/n]: ').strip().lower()
                     if state not in ('y', 'n'):
@@ -695,6 +746,7 @@ def main(argv=None):
                     reconnect(port, lambda i: set_bluetooth(i, enabled), lambda i: bluetooth_matches(i, enabled))
                     dev['device']['bluetooth'] = enabled
                     save_device(dev['path'], dev['device'])
+                    remember(selected.serial_number)
                 elif choice == '7':
                     sets = load_shared_messages()
                     if not sets:
@@ -709,12 +761,14 @@ def main(argv=None):
                               i.getCannedMessage() == messages)
                     dev['device']['canned'] = chosen
                     save_device(dev['path'], dev['device'])
+                    remember(selected.serial_number)
                 elif choice == '8':
                     slot = shared['frequency_slot']
                     if not confirmed(f'Set EU_868, LONG_FAST slot {slot} and rotary pins 9/10/16?'):
                         continue
                     reconnect(port, lambda i: update_profile(i.localNode, slot),
                               lambda i: profile_matches(i.localNode, slot))
+                    remember(selected.serial_number)
                 elif choice == '9':
                     enter_dfu(port)
                 elif choice == '10':

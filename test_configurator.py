@@ -381,6 +381,85 @@ class PairApplyTests(unittest.TestCase):
         self.assertEqual(names, {'SER1': 'ZTracker 01', 'SER2': 'unreachable'})
 
 
+class PortSelectionTests(unittest.TestCase):
+    def test_choose_port_lists_only_usb_ports(self):
+        from types import SimpleNamespace
+        legacy = SimpleNamespace(device='/dev/ttyS31', description='n/a', serial_number=None, vid=None)
+        board = SimpleNamespace(device='/dev/ttyACM0', description='WIO-BOOT', serial_number='SER1', vid=0x239A)
+        with patch('serial.tools.list_ports.comports', return_value=[legacy] * 32 + [board]), \
+             patch('builtins.input', return_value='1'):
+            selected = c.choose_port()
+        self.assertEqual(selected.device, '/dev/ttyACM0')
+
+    def _session(self, root, kind, serial):
+        path = root / f'1-{kind}.json'
+        device = {'track_key': 'ab' * 32, 'long_name': 'X', 'short_name': 'X', 'bluetooth': True,
+                  'canned': None, 'usb_serial': serial}
+        if kind == 'handheld':
+            device['family_key'] = 'cd' * 32
+        c.save_device(path, device)
+        return {'path': path, 'device': device, 'kind': kind}
+
+    def test_resolve_switches_to_the_file_owning_the_board(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            beacon = self._session(root, 'beacon', 'SER1')
+            handheld = self._session(root, 'handheld', 'SER2')
+            candidates = {k: root / f'1-{k}.json' for k in ('beacon', 'handheld')}
+            selected = type('P', (), {'serial_number': 'SER2', 'device': '/dev/ttyB'})()
+            c.resolve_selected(selected, beacon, candidates)
+            self.assertEqual(beacon['kind'], 'handheld')
+            self.assertEqual(beacon['device']['usb_serial'], 'SER2')
+            self.assertEqual(handheld['path'], beacon['path'])
+
+    def test_resolve_refuses_a_foreign_board(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            beacon = self._session(root, 'beacon', 'SER1')
+            self._session(root, 'handheld', 'SER2')
+            candidates = {k: root / f'1-{k}.json' for k in ('beacon', 'handheld')}
+            selected = type('P', (), {'serial_number': 'SER9', 'device': '/dev/ttyC'})()
+            with patch.object(c, 'confirmed', return_value=False):
+                with self.assertRaises(ValueError):
+                    c.resolve_selected(selected, beacon, candidates)
+
+    def test_resolve_binds_an_unknown_board_after_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            beacon = self._session(root, 'beacon', None)
+            candidates = {k: root / f'1-{k}.json' for k in ('beacon', 'handheld')}
+            selected = type('P', (), {'serial_number': 'SER9', 'device': '/dev/ttyC'})()
+            with patch.object(c, 'confirmed', return_value=True):
+                c.resolve_selected(selected, beacon, candidates)  # confirmed, operation may proceed
+            # Binding is remembered only after a successful operation (remember()).
+            self.assertIsNone(beacon['device']['usb_serial'])
+
+    def test_resolve_aborts_unknown_board_without_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            beacon = self._session(root, 'beacon', None)
+            candidates = {k: root / f'1-{k}.json' for k in ('beacon', 'handheld')}
+            selected = type('P', (), {'serial_number': 'SER9', 'device': '/dev/ttyC'})()
+            with patch.object(c, 'confirmed', return_value=False):
+                with self.assertRaises(ValueError):
+                    c.resolve_selected(selected, beacon, candidates)
+
+    def test_resolve_creates_missing_sibling_when_foreign_board_plugged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            beacon = self._session(root, 'beacon', 'SER1')
+            candidates = {k: root / f'1-{k}.json' for k in ('beacon', 'handheld')}
+            selected = type('P', (), {'serial_number': 'SER2', 'device': '/dev/ttyB'})()
+            fresh = {'track_key': 'ab' * 32, 'family_key': 'cd' * 32, 'long_name': 'Kid', 'short_name': 'K1',
+                     'bluetooth': True, 'canned': None}
+            with patch.object(c, 'confirmed', return_value=True), \
+                 patch.object(c, 'prompt_device', return_value=fresh) as prompted:
+                c.resolve_selected(selected, beacon, candidates)
+            prompted.assert_called_once_with(candidates['handheld'])
+            self.assertEqual(beacon['kind'], 'handheld')
+            self.assertEqual(c.load_device(candidates['handheld'])['usb_serial'], 'SER2')
+
+
 class EnterDfuTests(unittest.TestCase):
     def test_enter_dfu_calls_node(self):
         entered = []
