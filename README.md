@@ -12,7 +12,7 @@ Linux:
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
-python configurator.py
+python configurator.py <child number>
 ```
 
 Windows PowerShell:
@@ -21,56 +21,87 @@ Windows PowerShell:
 py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-python configurator.py
+python configurator.py <child number>
 ```
 
 Install the necessary USB serial driver and permissions on your PC. The menu
 lists available serial ports: select the intended device explicitly.
 
-## Device indexes and files
+## Devices, files, and channels
 
-Configuration lives in `local/` **beside the script** (never the current
-directory, so the same keys are found no matter where you launch it):
+Each child *n* owns a **pair** of devices, configured by two files:
 
-- `local/shared.json` — the two channel secrets and their names. **Generate
-  the keys once** (menu 1); every device uses the same ones. The group
-  channel is the shared one: the family channel at home, the class channel at
-  the workshop. Edit `pair_name` / `group_name` here to rename channels.
-- `local/<n>.json` — one device's properties: role (tracker or child), names,
-  Bluetooth on/off, canned messages. The index is just a file name; kids get
-  1..n at the workshop, the tracker is 0, and running
-  `python configurator.py` without an argument selects 0.
+- `<n>-tracker.json` — the device **in the child's hand** (no GPS). The kid
+  takes this one home.
+- `<n>-tracked.json` — the **GPS device being tracked** (position source).
 
-First run for an index asks role, names, Bluetooth and an optional canned
-message file, then stores `local/<n>.json`. Prepare all the JSON files in
-advance — on the workshop PC you then only connect each device and apply.
+| Channel | Key | Stored in | tracked (GPS) | tracker (handheld) |
+|---|---|---|---|---|
+| **track** (primary) | unique per pair | both pair files | idx 0, position precision 32 | idx 0, precision 0 |
+| **family** | unique per family, auto-generated | `<n>-tracker.json` | — | idx 1 |
+| **group** | one workshop-wide key | `shared.json` only | — | idx 2 |
+| **public** (optional) | well-known default key | network-wide switch | idx 1 if on | idx 3 if on |
+
+`local/` lives **beside the script** (never the current directory):
+
+- `shared.json` — `group_name`, `group_key` (generate **once** for the whole
+  workshop), `track_name`, `frequency_slot` (default 1), `public_channel`
+  (default false). These are network-wide: a device whose slot differs from
+  the others hears nobody.
+- `shared_messages.json` — canned message sets, keyed by a short name
+  (`{"workshop": "Hi|Help|Found you"}`). Edit with a text editor; the menu
+  only selects a set by key.
+- `<n>-*.json` — the pair's properties: names, Bluetooth, canned set key,
+  and the pair's private `track_key` (identical in both files, generated
+  automatically when the first file is created; the sibling inherits it).
+  The tracker file additionally holds the auto-generated `family_key`.
+
+First run for a missing file asks names, Bluetooth and an optional canned
+set key, then stores the JSON. Prepare all files in advance — on the
+workshop PC you then only connect each device and apply.
 
 ## Menu
 
-1. **Create keys (pair + group, once)** — stored in `shared.json` before use.
-2. **Configure channel** — applies the pair channel (index 0; full position
-   precision on the tracker) or, on child devices, the group channel
-   (index 1).
-3. **Export pair QR** — pair-only QR of the connected device to
-   `local/pair-qr.png` (contains the channel secret).
-4. **Change name** 5. **Bluetooth on/off** 6. **Canned messages** — these also
-   update `<n>.json`, so it stays the source of truth.
-7. **Radio/rotary profile** — EU_868, LONG_FAST, slot 1, rotary pins and
-   events. Apply to **every** device: devices with different slots cannot hear
-   each other. Mind local radio rules; attach the antenna first.
-8. **Enter DFU mode** — reboots the device into the bootloader so a new
-   `.uf2` can be copied onto the MESHBOOT drive; kids can update firmware
-   without the provisioning tool.
-9. **Apply all** — applies profile, channels (by role), name, Bluetooth and
-   canned messages from the JSON files, with read-back verification per step.
-   This is the workshop path: one pass per device.
+1. **Create group key (once)** — stored in `shared.json` before use.
+2. **Configure channel** — pick track / family / group / public (valid
+   options depend on the device kind).
+3. **Export track QR** — primary-only QR of the connected device (contains
+   the pair secret).
+4. **Export family QR** — built offline from `<n>-tracker.json` for the
+   parents' app; no device needed. (Tracker files only.)
+5. **Change name** 6. **Bluetooth on/off** 7. **Canned messages selector** —
+   these also update `<n>-*.json`, so it stays the source of truth.
+8. **Radio/rotary profile** — EU_868, LONG_FAST, the shared `frequency_slot`,
+   rotary pins and events. Apply to **every** device.
+9. **Enter DFU mode** — reboots into the bootloader so a new `.uf2` can be
+   copied onto the MESHBOOT drive; kids can update firmware without the
+   provisioning tool.
+10. **Apply all** — profile, channels (by kind), public channel if enabled,
+    name, Bluetooth, canned set — read-back verified per step. One pass per
+    device; this is the workshop path.
 0. Exit.
 
 Every write reconnects and reads back; a mismatch is reported as an error but
 may require inspecting a partially applied configuration.
 
-Rotating a key disconnects devices still using the old key: re-apply to every
-device afterward. Keep `local/` and the QR image private; copy it somewhere
-safe so the keys are not lost. Never commit or share the keys by accident.
+## Frequency slots and the public channel (why it is a network-wide switch)
+
+A device tunes **one** radio frequency: the slot comes from the primary
+channel (or `frequency_slot`). *All* channels — track, family, group, public
+— transmit on that same frequency; channels are virtual labels, not
+frequencies. A node retransmits a packet only if it can decode it: same
+frequency **and** a channel with matching name+key. Foreign stock devices sit
+on their own LongFast slot, so they hear nothing of ours today. To
+experiment with them, set `public_channel: true` and `frequency_slot` to the
+stock LongFast slot in `shared.json`, then Apply all to every device; the
+public secondary (empty name, default key) then decodes exactly like their
+primary, while track/family/group keep working unchanged.
+
+Private channels are flooded only by nodes holding their key: group traffic
+is relayed by the whole class, track traffic only by the pair itself.
+
+Rotating a key disconnects devices still using it: re-apply afterward. Keep
+`local/` and exported QRs private; back them up so keys are not lost. Never
+commit or share the keys by accident.
 
 Run offline tests with `python -m unittest -v`.

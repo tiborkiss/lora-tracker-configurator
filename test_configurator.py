@@ -53,31 +53,31 @@ class FakeIface:
 
 
 class ChannelTests(unittest.TestCase):
-    def test_pair_only_qr_excludes_group_key(self):
+    def test_track_qr_excludes_other_channels(self):
         node = Node()
-        pair, group = b'\x11' * 32, b'\x22' * 32
-        c.update_channel(node, 0, 'pair', pair, 32)
-        c.update_channel(node, 1, 'group', group, 0)
-        url = c.pair_url(node, pair)
+        track, other = b'\x11' * 32, b'\x22' * 32
+        c.update_channel(node, 0, 'track', track, 32)
+        c.update_channel(node, 1, 'family', other, 0)
+        url = c.pair_url(node, track)
         fragment = url.split('#')[1]
         payload = apponly_pb2.ChannelSet()
         payload.ParseFromString(base64.urlsafe_b64decode(fragment + '=' * (-len(fragment) % 4)))
         self.assertEqual(len(payload.settings), 1)
-        self.assertEqual(bytes(payload.settings[0].psk), pair)
-        self.assertNotIn(group, payload.SerializeToString())
+        self.assertEqual(bytes(payload.settings[0].psk), track)
+        self.assertNotIn(other, payload.SerializeToString())
         with self.assertRaises(ValueError):
-            c.pair_url(node, group)
+            c.pair_url(node, other)
 
-    def test_group_write_preserves_pair(self):
+    def test_second_channel_write_preserves_primary(self):
         node = Node()
-        c.update_channel(node, 0, 'pair', b'a' * 32, 32)
+        c.update_channel(node, 0, 'track', b'a' * 32, 32)
         before = node.channels[0].SerializeToString()
-        c.update_channel(node, 1, 'group', b'b' * 32, 0)
+        c.update_channel(node, 1, 'family', b'b' * 32, 0)
         self.assertEqual(node.channels[0].SerializeToString(), before)
         self.assertEqual(node.writes, [0, 1])
-        self.assertTrue(c.channel_matches(node, 0, 'pair', b'a' * 32, 32))
-        self.assertTrue(c.channel_matches(node, 1, 'group', b'b' * 32, 0))
-        self.assertFalse(c.channel_matches(node, 0, 'pair', b'a' * 32, 0))
+        self.assertTrue(c.channel_matches(node, 0, 'track', b'a' * 32, 32))
+        self.assertTrue(c.channel_matches(node, 1, 'family', b'b' * 32, 0))
+        self.assertFalse(c.channel_matches(node, 0, 'track', b'a' * 32, 0))
 
     def test_workshop_profile_explicit_slot_and_rotary(self):
         node = Node()
@@ -87,75 +87,129 @@ class ChannelTests(unittest.TestCase):
         node.localConfig.lora.channel_num = 0
         self.assertFalse(c.profile_matches(node, 1))
 
+    def test_public_channel_uses_default_key_and_mqtt_open(self):
+        node = Node()
+        c.apply_public_channel(node, 1)
+        self.assertTrue(c.public_channel_matches(node, 1))
+        self.assertEqual(node.writes, [1])
+        self.assertEqual(node.channels[1].settings.name, '')
+        node.channels[1].settings.psk = b'\x02'
+        self.assertFalse(c.public_channel_matches(node, 1))
 
-class SharedSecretTests(unittest.TestCase):
-    def test_keys_saved_before_use(self):
+
+class SharedTests(unittest.TestCase):
+    def test_defaults_and_group_key_persisted_before_use(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(c, 'SHARED', Path(tmp) / 'shared.json'):
                 shared = c.load_shared()
-                self.assertEqual(shared['pair_name'], 'pair')
                 self.assertEqual(shared['group_name'], 'group')
-                c.generate_key(shared, 'pair_key')
+                self.assertEqual(shared['track_name'], 'track')
+                self.assertEqual(shared['frequency_slot'], 1)
+                self.assertFalse(shared['public_channel'])
                 c.generate_key(shared, 'group_key')
-                # The generation persisted; a fresh load sees the same secrets.
-                reloaded = c.load_shared()
-                self.assertEqual(c.get_key(reloaded, 'pair_key'), c.get_key(shared, 'pair_key'))
-                self.assertEqual(c.get_key(reloaded, 'group_key'), c.get_key(shared, 'group_key'))
-                self.assertEqual(len(c.get_key(reloaded, 'pair_key')), 32)
+                self.assertEqual(c.get_key(c.load_shared(), 'group_key'), c.get_key(shared, 'group_key'))
+
+    def test_invalid_slot_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'shared.json'
+            path.write_text('{"frequency_slot": 0}', encoding='utf-8')
+            with patch.object(c, 'SHARED', path):
+                with self.assertRaises(ValueError):
+                    c.load_shared()
 
     def test_missing_key_is_refused(self):
         with self.assertRaises(ValueError):
-            c.get_key({}, 'pair_key')
+            c.get_key({}, 'group_key')
 
 
-class DeviceConfigTests(unittest.TestCase):
-    def test_prompt_device_writes_complete_json(self):
+class DeviceFileTests(unittest.TestCase):
+    def test_kind_and_sibling_paths(self):
+        self.assertEqual(c.device_kind(Path('5-tracker.json')), 'tracker')
+        self.assertEqual(c.device_kind(Path('5-tracked.json')), 'tracked')
+        self.assertEqual(c.sibling_path(Path('5-tracker.json')), Path('5-tracked.json'))
+        self.assertEqual(c.sibling_path(Path('5-tracked.json')), Path('5-tracker.json'))
+        with self.assertRaises(ValueError):
+            c.device_kind(Path('5.json'))
+
+    def test_tracker_created_first_then_tracked_shares_pair_key(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / '3.json'
-            answers = iter(['child', 'Kid Three', 'K3', 'y', ''])
+            tracker = Path(tmp) / '2-tracker.json'
+            tracked = Path(tmp) / '2-tracked.json'
+            answers = iter(['Kid Two', 'K2', 'y', 'workshop'])
+            messages = Path(tmp) / 'shared_messages.json'
+            messages.write_text('{"workshop": "hi|ho"}', encoding='utf-8')
+            with patch.object(c, 'SHARED_MESSAGES', messages), patch('builtins.input', lambda _: next(answers)):
+                device = c.prompt_device(tracker)
+            self.assertEqual(device['canned'], 'workshop')
+            answers = iter(['Beacon Two', 'B2', 'n', ''])
             with patch('builtins.input', lambda _: next(answers)):
-                device = c.prompt_device(path)
-            self.assertEqual(device['role'], 'child')
-            self.assertEqual(device['bluetooth'], True)
-            self.assertIsNone(device['canned'])
-            self.assertEqual(c.load_device(path)['long_name'], 'Kid Three')
+                other = c.prompt_device(tracked)
+            self.assertEqual(other['track_key'], device['track_key'])
+            self.assertNotIn('family_key', other)
+            self.assertEqual(c.load_device(tracker)['family_key'], device['family_key'])
 
-    def test_prompt_device_reads_canned_file(self):
+    def test_tracked_created_first_generates_pair_key(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / '2.json'
-            messages = Path(tmp) / 'm.txt'
-            messages.write_text('hello\nhelp\n', encoding='utf-8')
-            answers = iter(['tracker', 'Träckthäspäck', 'TRK', 'n', str(messages)])
+            tracked = Path(tmp) / '7-tracked.json'
+            tracker = Path(tmp) / '7-tracker.json'
+            answers = iter(['Beacon', 'BCN', 'y', ''])
             with patch('builtins.input', lambda _: next(answers)):
-                device = c.prompt_device(path)
-            self.assertEqual(device['canned'], ['hello', 'help'])
+                first = c.prompt_device(tracked)
+            answers = iter(['Kid', 'KID', 'n', ''])
+            with patch('builtins.input', lambda _: next(answers)):
+                second = c.prompt_device(tracker)
+            self.assertEqual(first['track_key'], second['track_key'])
+            self.assertIn('family_key', second)
 
-    def test_prompt_device_rejects_bad_role(self):
+    def test_unknown_canned_set_rejected_at_creation(self):
         with tempfile.TemporaryDirectory() as tmp:
-            answers = iter(['friend', 'x', 'x', 'y', ''])
-            with patch('builtins.input', lambda _: next(answers)):
+            messages = Path(tmp) / 'shared_messages.json'
+            messages.write_text('{}', encoding='utf-8')
+            answers = iter(['Kid', 'K1', 'y', 'nope'])
+            with patch.object(c, 'SHARED_MESSAGES', messages), patch('builtins.input', lambda _: next(answers)):
                 with self.assertRaises(ValueError):
-                    c.prompt_device(Path(tmp) / '4.json')
+                    c.prompt_device(Path(tmp) / '1-tracker.json')
 
-    def test_load_device_rejects_unknown_role(self):
+    def test_load_device_requires_family_key_on_tracker(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / '9.json'
-            path.write_text('{"role": "friend", "long_name": "x", "short_name": "x"}', encoding='utf-8')
+            path = Path(tmp) / '3-tracker.json'
+            path.write_text('{"track_key": "ab", "long_name": "x", "short_name": "x", "bluetooth": true}',
+                            encoding='utf-8')
             with self.assertRaises(ValueError):
                 c.load_device(path)
 
-    def test_canned_string_validates_stored_lists(self):
-        with self.assertRaises(ValueError):
-            c.canned_string({'canned': ['a|b']})
-        self.assertEqual(c.canned_string({'canned': ['hi', 'ho']}), 'hi|ho')
-        self.assertIsNone(c.canned_string({'canned': None}))
+    def test_canned_resolution_uses_shared_sets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            messages = Path(tmp) / 'shared_messages.json'
+            messages.write_text('{"workshop": "hi|ho"}', encoding='utf-8')
+            with patch.object(c, 'SHARED_MESSAGES', messages):
+                self.assertEqual(c.resolve_canned({'canned': 'workshop'}), 'hi|ho')
+                self.assertIsNone(c.resolve_canned({'canned': None}))
+                with self.assertRaises(ValueError):
+                    c.resolve_canned({'canned': 'missing'})
+
+
+class FamilyUrlTests(unittest.TestCase):
+    def test_family_url_carries_family_channel_and_radio(self):
+        device = {'family_key': 'cd' * 32}
+        shared = {'frequency_slot': 1}
+        url = c.family_url(device, shared)
+        fragment = url.split('#')[1]
+        payload = apponly_pb2.ChannelSet()
+        payload.ParseFromString(base64.urlsafe_b64decode(fragment + '=' * (-len(fragment) % 4)))
+        self.assertEqual(len(payload.settings), 1)
+        self.assertEqual(payload.settings[0].name, 'family')
+        self.assertEqual(bytes(payload.settings[0].psk), bytes.fromhex('cd' * 32))
+        self.assertEqual(payload.lora_config.region, config_pb2.Config.LoRaConfig.EU_868)
+        self.assertEqual(payload.lora_config.channel_num, 1)
 
 
 class ApplyAllTests(unittest.TestCase):
-    def shared(self):
-        return {'pair_name': 'pair', 'pair_key': 'ab' * 32, 'group_name': 'group', 'group_key': 'cd' * 32}
+    def shared(self, public=False):
+        return {'group_name': 'group', 'group_key': 'ef' * 32, 'track_name': 'track',
+                'frequency_slot': 1, 'public_channel': public}
 
-    def run_apply(self, device):
+    def run_apply(self, kind, device, shared):
         calls = []
         iface = FakeIface()
         node = iface.localNode
@@ -181,34 +235,48 @@ class ApplyAllTests(unittest.TestCase):
              patch('time.sleep'), \
              patch.object(c, 'update_profile', wrap('profile', c.update_profile)), \
              patch.object(c, 'update_channel', wrap('channel', c.update_channel)), \
+             patch.object(c, 'apply_public_channel', wrap('public', c.apply_public_channel)), \
              patch.object(c, 'set_bluetooth', wrap('bluetooth', c.set_bluetooth)), \
              patch.object(c, 'set_canned', wrap('canned', c.set_canned)):
-            c.apply_all('x', device, self.shared())
+            c.apply_all('x', kind, device, shared)
         return calls, iface
 
-    def test_child_covers_both_channels_name_bluetooth_canned(self):
-        device = {'role': 'child', 'long_name': 'Kid', 'short_name': 'K1', 'bluetooth': True, 'canned': ['hi']}
-        calls, iface = self.run_apply(device)
-        self.assertEqual(calls, ['profile', 'channel', 'channel', 'name', 'bluetooth', 'canned'])
-        self.assertTrue(c.channel_matches(iface.localNode, 0, 'pair', bytes.fromhex('ab' * 32), 0))
-        self.assertTrue(c.channel_matches(iface.localNode, 1, 'group', bytes.fromhex('cd' * 32), 0))
+    def test_tracker_covers_track_family_group_name_bluetooth_canned(self):
+        device = {'track_key': 'ab' * 32, 'family_key': 'cd' * 32, 'long_name': 'Kid', 'short_name': 'K1',
+                  'bluetooth': True, 'canned': 'workshop'}
+        with tempfile.TemporaryDirectory() as tmp:
+            messages = Path(tmp) / 'shared_messages.json'
+            messages.write_text('{"workshop": "hi"}', encoding='utf-8')
+            with patch.object(c, 'SHARED_MESSAGES', messages):
+                calls, iface = self.run_apply('tracker', device, self.shared())
+        self.assertEqual(calls, ['profile', 'channel', 'channel', 'channel', 'name', 'bluetooth', 'canned'])
+        self.assertTrue(c.channel_matches(iface.localNode, 0, 'track', bytes.fromhex('ab' * 32), 0))
+        self.assertTrue(c.channel_matches(iface.localNode, 1, 'family', bytes.fromhex('cd' * 32), 0))
+        self.assertTrue(c.channel_matches(iface.localNode, 2, 'group', bytes.fromhex('ef' * 32), 0))
         self.assertEqual(iface.getLongName(), 'Kid')
-        self.assertTrue(iface.localNode.localConfig.bluetooth.enabled)
         self.assertEqual(iface.getCannedMessage(), 'hi')
 
-    def test_tracker_skips_group_and_uses_full_precision(self):
-        device = {'role': 'tracker', 'long_name': 'TRK', 'short_name': 'TRK', 'bluetooth': False, 'canned': None}
-        calls, iface = self.run_apply(device)
+    def test_tracked_skips_group_and_uses_full_precision(self):
+        device = {'track_key': 'ab' * 32, 'long_name': 'BCN', 'short_name': 'BCN', 'bluetooth': False, 'canned': None}
+        calls, iface = self.run_apply('tracked', device, self.shared())
         self.assertEqual(calls, ['profile', 'channel', 'name', 'bluetooth'])
-        self.assertTrue(c.channel_matches(iface.localNode, 0, 'pair', bytes.fromhex('ab' * 32), 32))
+        self.assertTrue(c.channel_matches(iface.localNode, 0, 'track', bytes.fromhex('ab' * 32), 32))
         self.assertFalse(iface.localNode.localConfig.bluetooth.enabled)
 
+    def test_public_channel_applied_when_enabled(self):
+        device = {'track_key': 'ab' * 32, 'long_name': 'BCN', 'short_name': 'BCN', 'bluetooth': False, 'canned': None}
+        calls, iface = self.run_apply('tracked', device, self.shared(public=True))
+        self.assertEqual(calls, ['profile', 'channel', 'public', 'name', 'bluetooth'])
+        self.assertTrue(c.public_channel_matches(iface.localNode, c.public_index('tracked')))
+
     def test_missing_group_key_aborts_before_any_write(self):
-        device = {'role': 'child', 'long_name': 'Kid', 'short_name': 'K1', 'bluetooth': True, 'canned': None}
-        shared = {'pair_name': 'pair', 'pair_key': 'ab' * 32, 'group_name': 'group', 'group_key': None}
+        device = {'track_key': 'ab' * 32, 'family_key': 'cd' * 32, 'long_name': 'Kid', 'short_name': 'K1',
+                  'bluetooth': True, 'canned': None}
+        shared = self.shared()
+        shared['group_key'] = None
         with patch.object(c, 'reconnect') as reconnect:
             with self.assertRaises(ValueError):
-                c.apply_all('x', device, shared)
+                c.apply_all('x', 'tracker', device, shared)
             reconnect.assert_not_called()
 
 
