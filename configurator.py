@@ -348,6 +348,7 @@ def public_index(kind):
 
 
 def choose_port():
+    """Return the selected pyserial port object (device path + USB serial)."""
     from serial.tools.list_ports import comports
     ports = list(comports())
     if not ports:
@@ -357,7 +358,13 @@ def choose_port():
     choice = int(input('Select the connected device number: '))
     if choice < 1 or choice > len(ports):
         raise ValueError('Invalid port selection')
-    return ports[choice - 1].device
+    return ports[choice - 1]
+
+
+def connected_serials():
+    """Map USB serial number -> device path for everything plugged in."""
+    from serial.tools.list_ports import comports
+    return {p.serial_number: p.device for p in comports() if p.serial_number}
 
 
 def connect(port):
@@ -422,6 +429,53 @@ def apply_all(port, kind, device, shared):
     print('All settings applied and read-back verified.')
 
 
+def apply_one(port, usb_serial, kind, device, shared, path):
+    """Apply one device file and remember which USB serial it belongs to."""
+    apply_all(port, kind, device, shared)
+    device['usb_serial'] = usb_serial
+    save_device(path, device)
+
+
+def apply_pair(device_path, shared):
+    """Apply both files of a pair, matching plugged-in devices by USB serial.
+
+    First time through, the operator is asked once which port is which;
+    the binding is stored in the JSON files and reused forever after.
+    """
+    ports = connected_serials()
+    claimed = set()
+    for path in (device_path, sibling_path(device_path)):
+        if not path.exists():
+            print(path.name, 'does not exist; skipped.')
+            continue
+        kind = device_kind(path)
+        device = load_device(path)
+        serial = device.get('usb_serial')
+        if serial and serial in ports:
+            print(f'{path.name} matched to {ports[serial]} by USB serial.')
+            apply_one(ports[serial], serial, kind, device, shared, path)
+            claimed.add(serial)
+            continue
+        if serial:
+            print(f'{path.name} is bound to USB serial {serial}, which is not connected; skipped.')
+            continue
+        free = {s: dev for s, dev in ports.items() if s not in claimed}
+        if not free:
+            print('No unclaimed port for', path.name, '; connect it and run again.')
+            continue
+        print(f'Assign {path.name} ({kind}) — pick the connected device:')
+        entries = sorted(free.items())
+        for i, (s, dev) in enumerate(entries, 1):
+            print(f'{i}. {dev} (USB serial {s})')
+        pick = int(input('Device number: '))
+        if pick < 1 or pick > len(entries):
+            raise ValueError('Invalid selection')
+        serial, port = entries[pick - 1]
+        apply_one(port, serial, kind, device, shared, path)
+        claimed.add(serial)
+    print('Pair application finished.')
+
+
 def enter_dfu(port):
     iface = connect(port)
     try:
@@ -463,7 +517,7 @@ def main(argv=None):
         while True:
             print('\n1 Create group key (once)  2 Configure channel  3 Export track QR  4 Export family QR')
             print('5 Change name  6 Bluetooth on/off  7 Canned messages selector  8 Radio/rotary profile')
-            print('9 Enter DFU mode  10 Apply all  0 Exit')
+            print('9 Enter DFU mode  10 Apply all (this device)  11 Apply all (pair, auto-detect)  0 Exit')
             try:
                 choice = input('Choice: ').strip()
                 if choice == '0':
@@ -474,7 +528,10 @@ def main(argv=None):
                     generate_key(shared, 'group_key')
                     print('Group key saved in shared.json; generate it once — every device uses the same one.')
                     continue
-                port = choose_port()
+                port = None
+                if choice in ('2', '3', '5', '6', '7', '8', '9', '10'):
+                    selected = choose_port()
+                    port = selected.device
                 if choice == '2':
                     options = [label for _, label, *_ in channel_plan(kind, device, shared)]
                     if shared.get('public_channel'):
@@ -562,7 +619,11 @@ def main(argv=None):
                 elif choice == '10':
                     if not confirmed('Apply every setting from the JSON files?'):
                         continue
-                    apply_all(port, kind, device, shared)
+                    apply_one(port, selected.serial_number, kind, device, shared, device_path)
+                elif choice == '11':
+                    if not confirmed('Apply the pair files to the connected devices (auto-detected)?'):
+                        continue
+                    apply_pair(device_path, shared)
                 else:
                     print('Unknown choice.')
             except (OSError, ValueError, RuntimeError, KeyError, IndexError) as exc:

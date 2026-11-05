@@ -280,6 +280,93 @@ class ApplyAllTests(unittest.TestCase):
             reconnect.assert_not_called()
 
 
+class PairApplyTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.beacon = self.root / '1-beacon.json'
+        self.handheld = self.root / '1-handheld.json'
+        self.beacon.write_text('{"track_key": "' + 'ab' * 32 + '", "long_name": "BCN", "short_name": "BCN", "bluetooth": true, "canned": null}',
+                               encoding='utf-8')
+        self.handheld.write_text('{"track_key": "' + 'ab' * 32 + '", "family_key": "' + 'cd' * 32 +
+                                 '", "long_name": "Kid", "short_name": "K1", "bluetooth": true, "canned": null}',
+                                 encoding='utf-8')
+        self.shared = {'group_name': 'group', 'group_key': 'ef' * 32, 'track_name': 'track',
+                       'frequency_slot': 1, 'public_channel': False}
+
+    def test_first_run_assigns_ports_and_records_serials(self):
+        calls = []
+
+        def fake_apply_one(port, serial, kind, device, shared, path):
+            calls.append((path.name, port, serial, kind))
+            device['usb_serial'] = serial
+            c.save_device(path, device)
+
+        # beacon picks SER1; afterwards only SER2 is unclaimed for the handheld
+        answers = iter(['1', '1'])
+        with patch.object(c, 'connected_serials',
+                          return_value={'SER1': '/dev/ttyA', 'SER2': '/dev/ttyB'}), \
+             patch.object(c, 'apply_one', fake_apply_one), \
+             patch('builtins.input', lambda _: next(answers)):
+            c.apply_pair(self.beacon, self.shared)
+        self.assertEqual(calls, [('1-beacon.json', '/dev/ttyA', 'SER1', 'beacon'),
+                                 ('1-handheld.json', '/dev/ttyB', 'SER2', 'handheld')])
+        self.assertEqual(c.load_device(self.beacon)['usb_serial'], 'SER1')
+        self.assertEqual(c.load_device(self.handheld)['usb_serial'], 'SER2')
+
+    def test_bound_devices_match_without_prompting(self):
+        device = c.load_device(self.beacon)
+        device['usb_serial'] = 'SER1'
+        c.save_device(self.beacon, device)
+        device = c.load_device(self.handheld)
+        device['usb_serial'] = 'SER2'
+        c.save_device(self.handheld, device)
+        calls = []
+        with patch.object(c, 'connected_serials',
+                          return_value={'SER1': '/dev/ttyA', 'SER2': '/dev/ttyB'}), \
+             patch.object(c, 'apply_one', lambda *a: calls.append((a[5].name, a[0]))), \
+             patch('builtins.input', side_effect=AssertionError('no prompt expected')):
+            c.apply_pair(self.beacon, self.shared)
+        self.assertEqual(calls, [('1-beacon.json', '/dev/ttyA'),
+                                 ('1-handheld.json', '/dev/ttyB')])
+
+    def test_bound_but_disconnected_device_is_skipped(self):
+        device = c.load_device(self.beacon)
+        device['usb_serial'] = 'SER9'
+        c.save_device(self.beacon, device)
+        device = c.load_device(self.handheld)
+        device['usb_serial'] = 'SER2'
+        c.save_device(self.handheld, device)
+        calls = []
+        with patch.object(c, 'connected_serials', return_value={'SER2': '/dev/ttyB'}), \
+             patch.object(c, 'apply_one', lambda *a: calls.append(a[5].name)):
+            c.apply_pair(self.beacon, self.shared)
+        self.assertEqual(calls, ['1-handheld.json'])
+
+    def test_apply_one_records_serial_after_success(self):
+        device = c.load_device(self.beacon)
+        with patch.object(c, 'apply_all') as apply_all:
+            c.apply_one('/dev/ttyA', 'SER1', 'beacon', device, self.shared, self.beacon)
+            apply_all.assert_called_once_with('/dev/ttyA', 'beacon', device, self.shared)
+        self.assertEqual(c.load_device(self.beacon)['usb_serial'], 'SER1')
+
+    def test_missing_sibling_prompts_for_the_single_connected_port(self):
+        calls = []
+
+        def fake_apply_one(port, serial, kind, device, shared, path):
+            calls.append(path.name)
+            device['usb_serial'] = serial
+            c.save_device(path, device)
+
+        with patch.object(c, 'connected_serials', return_value={'SER1': '/dev/ttyA'}), \
+             patch.object(c, 'apply_one', fake_apply_one), \
+             patch('builtins.input', lambda _: '1'):
+            c.apply_pair(self.beacon, self.shared)
+        self.assertEqual(calls, ['1-beacon.json'])
+        self.assertEqual(c.load_device(self.beacon)['usb_serial'], 'SER1')
+
+
 class EnterDfuTests(unittest.TestCase):
     def test_enter_dfu_calls_node(self):
         entered = []

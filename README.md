@@ -76,9 +76,14 @@ workshop PC you then only connect each device and apply.
 9. **Enter DFU mode** — reboots into the bootloader so a new `.uf2` can be
    copied onto the MESHBOOT drive; kids can update firmware without the
    provisioning tool.
-10. **Apply all** — profile, channels (by kind), public channel if enabled,
-    name, Bluetooth, canned set — read-back verified per step. One pass per
-    device; this is the workshop path.
+10. **Apply all (this device)** — profile, channels (by kind), public channel
+    if enabled, name, Bluetooth, canned set — read-back verified per step.
+    On success the board's USB serial number is stored in the device file.
+11. **Apply all (pair, auto-detect)** — plug both devices of the pair into
+    one PC and run this once: each file is matched to its board by USB
+    serial and applied automatically. The very first time (or when a board
+    is new/replaced) the tool asks which port is which, records the
+    binding, and every later run needs no questions.
 0. Exit.
 
 Every write reconnects and reads back; a mismatch is reported as an error but
