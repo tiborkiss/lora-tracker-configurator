@@ -367,6 +367,19 @@ class PairApplyTests(unittest.TestCase):
         self.assertEqual(calls, ['1-beacon.json'])
         self.assertEqual(c.load_device(self.beacon)['usb_serial'], 'SER1')
 
+    def test_port_names_reads_owner_and_tolerates_failures(self):
+        class Reachable:
+            def getLongName(self):
+                return 'ZTracker 01'
+
+            def close(self):
+                pass
+
+        entries = [('SER1', '/dev/ttyA'), ('SER2', '/dev/ttyB')]
+        with patch.object(c, 'connect', side_effect=[Reachable(), OSError('gone')]):
+            names = c.port_names(entries)
+        self.assertEqual(names, {'SER1': 'ZTracker 01', 'SER2': 'unreachable'})
+
 
 class EnterDfuTests(unittest.TestCase):
     def test_enter_dfu_calls_node(self):

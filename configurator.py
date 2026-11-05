@@ -494,6 +494,22 @@ def apply_one(serial, kind, device, shared, path):
     save_device(path, device)
 
 
+def port_names(entries):
+    """Best-effort current owner name per (serial, port); lets the operator
+    tell two plugged-in boards apart when (re)binding. Never raises."""
+    names = {}
+    for serial, port in entries:
+        try:
+            iface = connect(port)
+            try:
+                names[serial] = iface.getLongName() or '?'
+            finally:
+                iface.close()
+        except Exception:
+            names[serial] = 'unreachable'
+    return names
+
+
 def apply_pair(device_path, shared):
     """Apply both files of a pair, matching plugged-in devices by USB serial.
 
@@ -529,8 +545,10 @@ def apply_pair(device_path, shared):
             # The serial is informational; answer with the list number. The
             # list is a snapshot: if boards are swapped, rerun this menu.
             print(f'Assign {path.name} ({kind}) — pick the connected device:')
+            print('(inspecting the boards…)')
+            names = port_names(entries)
             for i, (s, dev) in enumerate(entries, 1):
-                print(f'{i}. {dev} (USB serial {s})')
+                print(f'{i}. {dev} (USB serial {s}) — currently "{names.get(s, "?")}"')
             pick = int(ask('Device number: '))
             if pick < 1 or pick > len(entries):
                 raise ValueError('Invalid selection')
