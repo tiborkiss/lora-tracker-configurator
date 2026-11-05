@@ -1,8 +1,8 @@
 # LoRa tracker family configurator
 
-Experimental standalone Python menu for configuring Meshtastic radios over USB.
-No firmware source checkout is required. Requires Python 3.9 or newer and a
-working USB connection; hardware and Windows testing are still pending.
+Standalone Python menu for configuring Meshtastic radios over USB. No firmware
+source checkout is required. Requires Python 3.9 or newer and a working USB
+connection; Windows testing is still pending.
 
 ## Install
 
@@ -27,32 +27,50 @@ python configurator.py
 Install the necessary USB serial driver and permissions on your PC. The menu
 lists available serial ports: select the intended device explicitly.
 
-## Pair and group
+## Device indexes and files
 
-1. Generate a pair key once; it is saved in `local/family.json` before use.
-2. Select each device over USB and apply the **pair** channel to both. Select
-   tracker for precise position sharing; select child for the GPS-less unit.
-3. Optional: put the same group key in each participating family's local file
-   and apply **group** to the child-facing device only. Rename channels by
-   editing `pair_name` and `group_name` in the local JSON file.
-4. Apply the workshop profile to each custom board: EU_868, LONG_FAST, slot 1,
-   and its rotary pins and events. This changes radio configuration; follow
-   the applicable local rules and attach the correct antenna before transmitting.
-5. Export the pair-only QR from a device with the matching pair key; it is saved
-   as `local/pair-qr.png`. A parent needs their own Meshtastic radio/node paired
-   with the phone. QR import may replace existing channels and radio settings;
-   verify the app's import options before proceeding.
+Configuration lives in `local/` **beside the script** (never the current
+directory, so the same keys are found no matter where you launch it):
 
-Rotating a key disconnects devices still using the old key: apply the new pair
-key to both pair devices and any family nodes; a new group key separates your
-child device and selected recipients from the workshop group. Keep
-`local/family.json` and QR images private. Copy the file to a safe location so
-the key is not lost. Never commit or share the group key by accident.
+- `local/shared.json` — the two channel secrets and their names. **Generate
+  the keys once** (menu 1); every device uses the same ones. The group
+  channel is the shared one: the family channel at home, the class channel at
+  the workshop. Edit `pair_name` / `group_name` here to rename channels.
+- `local/<n>.json` — one device's properties: role (tracker or child), names,
+  Bluetooth on/off, canned messages. The index is just a file name; kids get
+  1..n at the workshop, the tracker is 0, and running
+  `python configurator.py` without an argument selects 0.
 
-The menu can also change the device name, enable/disable Bluetooth and write
-canned messages from a UTF-8 file (one message per line, 200 bytes total). It
-reconnects to check read-back after writes; a mismatch is reported as an error,
-but may require inspecting a partially applied configuration. Device-specific
-firmware/API compatibility and actual QR imports remain to be tested.
+First run for an index asks role, names, Bluetooth and an optional canned
+message file, then stores `local/<n>.json`. Prepare all the JSON files in
+advance — on the workshop PC you then only connect each device and apply.
+
+## Menu
+
+1. **Create keys (pair + group, once)** — stored in `shared.json` before use.
+2. **Configure channel** — applies the pair channel (index 0; full position
+   precision on the tracker) or, on child devices, the group channel
+   (index 1).
+3. **Export pair QR** — pair-only QR of the connected device to
+   `local/pair-qr.png` (contains the channel secret).
+4. **Change name** 5. **Bluetooth on/off** 6. **Canned messages** — these also
+   update `<n>.json`, so it stays the source of truth.
+7. **Radio/rotary profile** — EU_868, LONG_FAST, slot 1, rotary pins and
+   events. Apply to **every** device: devices with different slots cannot hear
+   each other. Mind local radio rules; attach the antenna first.
+8. **Enter DFU mode** — reboots the device into the bootloader so a new
+   `.uf2` can be copied onto the MESHBOOT drive; kids can update firmware
+   without the provisioning tool.
+9. **Apply all** — applies profile, channels (by role), name, Bluetooth and
+   canned messages from the JSON files, with read-back verification per step.
+   This is the workshop path: one pass per device.
+0. Exit.
+
+Every write reconnects and reads back; a mismatch is reported as an error but
+may require inspecting a partially applied configuration.
+
+Rotating a key disconnects devices still using the old key: re-apply to every
+device afterward. Keep `local/` and the QR image private; copy it somewhere
+safe so the keys are not lost. Never commit or share the keys by accident.
 
 Run offline tests with `python -m unittest -v`.
