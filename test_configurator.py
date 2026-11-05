@@ -124,40 +124,40 @@ class SharedTests(unittest.TestCase):
 
 class DeviceFileTests(unittest.TestCase):
     def test_kind_and_sibling_paths(self):
-        self.assertEqual(c.device_kind(Path('5-tracker.json')), 'tracker')
-        self.assertEqual(c.device_kind(Path('5-tracked.json')), 'tracked')
-        self.assertEqual(c.sibling_path(Path('5-tracker.json')), Path('5-tracked.json'))
-        self.assertEqual(c.sibling_path(Path('5-tracked.json')), Path('5-tracker.json'))
+        self.assertEqual(c.device_kind(Path('5-handheld.json')), 'handheld')
+        self.assertEqual(c.device_kind(Path('5-beacon.json')), 'beacon')
+        self.assertEqual(c.sibling_path(Path('5-handheld.json')), Path('5-beacon.json'))
+        self.assertEqual(c.sibling_path(Path('5-beacon.json')), Path('5-handheld.json'))
         with self.assertRaises(ValueError):
             c.device_kind(Path('5.json'))
 
-    def test_tracker_created_first_then_tracked_shares_pair_key(self):
+    def test_handheld_created_first_then_beacon_shares_pair_key(self):
         with tempfile.TemporaryDirectory() as tmp:
-            tracker = Path(tmp) / '2-tracker.json'
-            tracked = Path(tmp) / '2-tracked.json'
+            handheld = Path(tmp) / '2-handheld.json'
+            beacon = Path(tmp) / '2-beacon.json'
             answers = iter(['Kid Two', 'K2', 'y', 'workshop'])
             messages = Path(tmp) / 'shared_messages.json'
             messages.write_text('{"workshop": "hi|ho"}', encoding='utf-8')
             with patch.object(c, 'SHARED_MESSAGES', messages), patch('builtins.input', lambda _: next(answers)):
-                device = c.prompt_device(tracker)
+                device = c.prompt_device(handheld)
             self.assertEqual(device['canned'], 'workshop')
             answers = iter(['Beacon Two', 'B2', 'n', ''])
             with patch('builtins.input', lambda _: next(answers)):
-                other = c.prompt_device(tracked)
+                other = c.prompt_device(beacon)
             self.assertEqual(other['track_key'], device['track_key'])
             self.assertNotIn('family_key', other)
-            self.assertEqual(c.load_device(tracker)['family_key'], device['family_key'])
+            self.assertEqual(c.load_device(handheld)['family_key'], device['family_key'])
 
-    def test_tracked_created_first_generates_pair_key(self):
+    def test_beacon_created_first_generates_pair_key(self):
         with tempfile.TemporaryDirectory() as tmp:
-            tracked = Path(tmp) / '7-tracked.json'
-            tracker = Path(tmp) / '7-tracker.json'
+            beacon = Path(tmp) / '7-beacon.json'
+            handheld = Path(tmp) / '7-handheld.json'
             answers = iter(['Beacon', 'BCN', 'y', ''])
             with patch('builtins.input', lambda _: next(answers)):
-                first = c.prompt_device(tracked)
+                first = c.prompt_device(beacon)
             answers = iter(['Kid', 'KID', 'n', ''])
             with patch('builtins.input', lambda _: next(answers)):
-                second = c.prompt_device(tracker)
+                second = c.prompt_device(handheld)
             self.assertEqual(first['track_key'], second['track_key'])
             self.assertIn('family_key', second)
 
@@ -168,11 +168,11 @@ class DeviceFileTests(unittest.TestCase):
             answers = iter(['Kid', 'K1', 'y', 'nope'])
             with patch.object(c, 'SHARED_MESSAGES', messages), patch('builtins.input', lambda _: next(answers)):
                 with self.assertRaises(ValueError):
-                    c.prompt_device(Path(tmp) / '1-tracker.json')
+                    c.prompt_device(Path(tmp) / '1-handheld.json')
 
-    def test_load_device_requires_family_key_on_tracker(self):
+    def test_load_device_requires_family_key_on_handheld(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / '3-tracker.json'
+            path = Path(tmp) / '3-handheld.json'
             path.write_text('{"track_key": "ab", "long_name": "x", "short_name": "x", "bluetooth": true}',
                             encoding='utf-8')
             with self.assertRaises(ValueError):
@@ -241,14 +241,14 @@ class ApplyAllTests(unittest.TestCase):
             c.apply_all('x', kind, device, shared)
         return calls, iface
 
-    def test_tracker_covers_track_family_group_name_bluetooth_canned(self):
+    def test_handheld_covers_track_family_group_name_bluetooth_canned(self):
         device = {'track_key': 'ab' * 32, 'family_key': 'cd' * 32, 'long_name': 'Kid', 'short_name': 'K1',
                   'bluetooth': True, 'canned': 'workshop'}
         with tempfile.TemporaryDirectory() as tmp:
             messages = Path(tmp) / 'shared_messages.json'
             messages.write_text('{"workshop": "hi"}', encoding='utf-8')
             with patch.object(c, 'SHARED_MESSAGES', messages):
-                calls, iface = self.run_apply('tracker', device, self.shared())
+                calls, iface = self.run_apply('handheld', device, self.shared())
         self.assertEqual(calls, ['profile', 'channel', 'channel', 'channel', 'name', 'bluetooth', 'canned'])
         self.assertTrue(c.channel_matches(iface.localNode, 0, 'track', bytes.fromhex('ab' * 32), 0))
         self.assertTrue(c.channel_matches(iface.localNode, 1, 'family', bytes.fromhex('cd' * 32), 0))
@@ -256,18 +256,18 @@ class ApplyAllTests(unittest.TestCase):
         self.assertEqual(iface.getLongName(), 'Kid')
         self.assertEqual(iface.getCannedMessage(), 'hi')
 
-    def test_tracked_skips_group_and_uses_full_precision(self):
+    def test_beacon_skips_group_and_uses_full_precision(self):
         device = {'track_key': 'ab' * 32, 'long_name': 'BCN', 'short_name': 'BCN', 'bluetooth': False, 'canned': None}
-        calls, iface = self.run_apply('tracked', device, self.shared())
+        calls, iface = self.run_apply('beacon', device, self.shared())
         self.assertEqual(calls, ['profile', 'channel', 'name', 'bluetooth'])
         self.assertTrue(c.channel_matches(iface.localNode, 0, 'track', bytes.fromhex('ab' * 32), 32))
         self.assertFalse(iface.localNode.localConfig.bluetooth.enabled)
 
     def test_public_channel_applied_when_enabled(self):
         device = {'track_key': 'ab' * 32, 'long_name': 'BCN', 'short_name': 'BCN', 'bluetooth': False, 'canned': None}
-        calls, iface = self.run_apply('tracked', device, self.shared(public=True))
+        calls, iface = self.run_apply('beacon', device, self.shared(public=True))
         self.assertEqual(calls, ['profile', 'channel', 'public', 'name', 'bluetooth'])
-        self.assertTrue(c.public_channel_matches(iface.localNode, c.public_index('tracked')))
+        self.assertTrue(c.public_channel_matches(iface.localNode, c.public_index('beacon')))
 
     def test_missing_group_key_aborts_before_any_write(self):
         device = {'track_key': 'ab' * 32, 'family_key': 'cd' * 32, 'long_name': 'Kid', 'short_name': 'K1',
@@ -276,7 +276,7 @@ class ApplyAllTests(unittest.TestCase):
         shared['group_key'] = None
         with patch.object(c, 'reconnect') as reconnect:
             with self.assertRaises(ValueError):
-                c.apply_all('x', 'tracker', device, shared)
+                c.apply_all('x', 'handheld', device, shared)
             reconnect.assert_not_called()
 
 

@@ -31,14 +31,14 @@ lists available serial ports: select the intended device explicitly.
 
 Each child *n* owns a **pair** of devices, configured by two files:
 
-- `<n>-tracker.json` — the device **in the child's hand** (no GPS). The kid
+- `<n>-handheld.json` — the device **in the child's hand** (no GPS). The kid
   takes this one home.
-- `<n>-tracked.json` — the **GPS device being tracked** (position source).
+- `<n>-beacon.json` — the **GPS beacon** (position source).
 
-| Channel | Key | Stored in | tracked (GPS) | tracker (handheld) |
+| Channel | Key | Stored in | beacon (GPS) | handheld (child) |
 |---|---|---|---|---|
 | **track** (primary) | unique per pair | both pair files | idx 0, position precision 32 | idx 0, precision 0 |
-| **family** | unique per family, auto-generated | `<n>-tracker.json` | — | idx 1 |
+| **family** | unique per family, auto-generated | `<n>-handheld.json` | — | idx 1 |
 | **group** | one workshop-wide key | `shared.json` only | — | idx 2 |
 | **public** (optional) | well-known default key | network-wide switch | idx 1 if on | idx 3 if on |
 
@@ -54,7 +54,7 @@ Each child *n* owns a **pair** of devices, configured by two files:
 - `<n>-*.json` — the pair's properties: names, Bluetooth, canned set key,
   and the pair's private `track_key` (identical in both files, generated
   automatically when the first file is created; the sibling inherits it).
-  The tracker file additionally holds the auto-generated `family_key`.
+  The handheld file additionally holds the auto-generated `family_key`.
 
 First run for a missing file asks names, Bluetooth and an optional canned
 set key, then stores the JSON. Prepare all files in advance — on the
@@ -67,8 +67,8 @@ workshop PC you then only connect each device and apply.
    options depend on the device kind).
 3. **Export track QR** — primary-only QR of the connected device (contains
    the pair secret).
-4. **Export family QR** — built offline from `<n>-tracker.json` for the
-   parents' app; no device needed. (Tracker files only.)
+4. **Export family QR** — built offline from `<n>-handheld.json` for the
+   parents' app; no device needed. (Handheld files only.)
 5. **Change name** 6. **Bluetooth on/off** 7. **Canned messages selector** —
    these also update `<n>-*.json`, so it stays the source of truth.
 8. **Radio/rotary profile** — EU_868, LONG_FAST, the shared `frequency_slot`,

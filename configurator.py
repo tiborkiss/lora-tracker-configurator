@@ -8,14 +8,14 @@ Configuration lives beside this script, never in the current directory.
   frequency slot and whether the public channel is enabled.
 - local/shared_messages.json — canned message sets, keyed by a short name.
   Device JSONs reference a set by key; edit this file with a text editor.
-- local/<n>-tracker.json — the device in the child's hand (no GPS). Carries
+- local/<n>-handheld.json — the device in the child's hand (no GPS). Carries
   the pair's track key, the family's own key, and the group channel.
-- local/<n>-tracked.json — the GPS device being tracked. Carries the same
+- local/<n>-beacon.json — the GPS beacon (position source). Carries the same
   pair track key. Pair keys are unique per <n>; different pairs cannot
   decode each other.
 
 Channel layout: track is primary on both devices (position precision 32 on
-the tracked GPS device); family and group are secondaries on the tracker;
+the beacon); family and group are secondaries on the handheld;
 the optional public channel is a secondary with the well-known default key.
 """
 
@@ -105,15 +105,15 @@ def get_key(config, field):
 
 
 def device_kind(path):
-    if path.name.endswith('-tracker.json'):
-        return 'tracker'
-    if path.name.endswith('-tracked.json'):
-        return 'tracked'
-    raise ValueError(f'{path.name} must be named <n>-tracker.json or <n>-tracked.json')
+    if path.name.endswith('-handheld.json'):
+        return 'handheld'
+    if path.name.endswith('-beacon.json'):
+        return 'beacon'
+    raise ValueError(f'{path.name} must be named <n>-handheld.json or <n>-beacon.json')
 
 
 def sibling_path(path):
-    other = 'tracked' if device_kind(path) == 'tracker' else 'tracker'
+    other = 'beacon' if device_kind(path) == 'handheld' else 'handheld'
     stem = path.name[:-len('.json')].rsplit('-', 1)[0]
     return path.with_name(f'{stem}-{other}.json')
 
@@ -121,7 +121,7 @@ def sibling_path(path):
 def load_device(path):
     config = load_json(path)
     required = ['track_key', 'long_name', 'short_name', 'bluetooth']
-    if device_kind(path) == 'tracker':
+    if device_kind(path) == 'handheld':
         required.append('family_key')
     for field in required:
         if field not in config:
@@ -148,7 +148,7 @@ def prompt_device(path):
         raise ValueError('Enter y or n')
     config = {'track_key': track_key, 'long_name': long_name, 'short_name': short_name,
               'bluetooth': state == 'y', 'canned': None}
-    if kind == 'tracker':
+    if kind == 'handheld':
         config['family_key'] = secrets.token_hex(32)
         print('A new family key was generated; export the family QR for the parents (menu 4).')
     canned = input('Canned set key from shared_messages.json (empty for none): ').strip()
@@ -201,7 +201,7 @@ def pair_url(node, key):
 
 
 def family_url(device, shared):
-    """Build the family-channel URL offline from <n>-tracker.json."""
+    """Build the family-channel URL offline from <n>-handheld.json."""
     from meshtastic.protobuf import apponly_pb2, config_pb2
     channels = apponly_pb2.ChannelSet()
     settings = channels.settings.add()
@@ -336,15 +336,15 @@ def set_canned(iface, messages):
 def channel_plan(kind, device, shared):
     """(index, label, name, key, precision) for one device kind, in order."""
     plan = [(0, 'track', shared['track_name'], get_key(device, 'track_key'),
-             32 if kind == 'tracked' else 0)]
-    if kind == 'tracker':
+             32 if kind == 'beacon' else 0)]
+    if kind == 'handheld':
         plan.append((1, FAMILY_NAME, FAMILY_NAME, get_key(device, 'family_key'), 0))
         plan.append((2, 'group', shared['group_name'], get_key(shared, 'group_key'), 0))
     return plan
 
 
 def public_index(kind):
-    return 3 if kind == 'tracker' else 1
+    return 3 if kind == 'handheld' else 1
 
 
 def choose_port():
@@ -434,8 +434,8 @@ def enter_dfu(port):
 def resolve_device_path(argv):
     number = argv[1] if len(argv) > 1 else None
     kind = argv[2] if len(argv) > 2 else None
-    if kind and kind not in ('tracker', 'tracked'):
-        raise ValueError('Second argument must be tracker or tracked')
+    if kind and kind not in ('handheld', 'beacon'):
+        raise ValueError('Second argument must be handheld or beacon')
     if not number:
         number = input('Child number: ').strip()
     if not re.fullmatch(r'[0-9]+', number):
@@ -443,12 +443,12 @@ def resolve_device_path(argv):
     number = str(int(number))
     if kind:
         return LOCAL / f'{number}-{kind}.json'
-    existing = [p for p in (LOCAL / f'{number}-tracker.json', LOCAL / f'{number}-tracked.json') if p.exists()]
+    existing = [p for p in (LOCAL / f'{number}-handheld.json', LOCAL / f'{number}-beacon.json') if p.exists()]
     if len(existing) == 1:
         return existing[0]
-    asked = input('Which device — tracker (child handheld) or tracked (GPS)? ').strip().lower()
-    if asked not in ('tracker', 'tracked'):
-        raise ValueError('Enter tracker or tracked')
+    asked = input("Which device — handheld (in the child's hand) or beacon (GPS)? ").strip().lower()
+    if asked not in ('handheld', 'beacon'):
+        raise ValueError('Enter handheld or beacon')
     return LOCAL / f'{number}-{asked}.json'
 
 
@@ -511,8 +511,8 @@ def main(argv=None):
                     store_qr(url, image_path, replace=replace)
                     print('Saved private track-only QR to', image_path, '(contains the channel secret).')
                 elif choice == '4':
-                    if kind != 'tracker':
-                        raise ValueError('The family channel lives on the tracker file')
+                    if kind != 'handheld':
+                        raise ValueError('The family channel lives on the handheld file')
                     image_path = LOCAL / f'{device_path.stem}-family-qr.png'
                     replace = image_path.exists()
                     if replace and not confirmed('Replace the existing family QR?'):
