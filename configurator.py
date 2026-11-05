@@ -139,11 +139,11 @@ def prompt_device(path):
     sibling = sibling_path(path)
     track_key = load_device(sibling)['track_key'] if sibling.exists() else secrets.token_hex(32)
     print(f'{path.name} not found — answer a few questions to create it.')
-    long_name = input('Long name: ').strip()
-    short_name = input('Short name (max 4 UTF-8 bytes): ').strip()
+    long_name = ask('Long name: ').strip()
+    short_name = ask('Short name (max 4 UTF-8 bytes): ').strip()
     if not long_name or len(long_name.encode('utf-8')) > 39 or not short_name or len(short_name.encode('utf-8')) > 4:
         raise ValueError('Names exceed device limits')
-    state = input('Enable Bluetooth? [y/n]: ').strip().lower()
+    state = ask('Enable Bluetooth? [y/n]: ').strip().lower()
     if state not in ('y', 'n'):
         raise ValueError('Enter y or n')
     config = {'track_key': track_key, 'long_name': long_name, 'short_name': short_name,
@@ -151,7 +151,7 @@ def prompt_device(path):
     if kind == 'handheld':
         config['family_key'] = secrets.token_hex(32)
         print('A new family key was generated; export the family QR for the parents (menu 4).')
-    canned = input('Canned set key from shared_messages.json (empty for none): ').strip()
+    canned = ask('Canned set key from shared_messages.json (empty for none): ').strip()
     if canned:
         if canned not in load_shared_messages():
             raise ValueError(f'No canned set "{canned}" in shared_messages.json')
@@ -355,7 +355,7 @@ def choose_port():
         raise ValueError('No serial ports found; connect a device')
     for i, port in enumerate(ports, 1):
         print(f'{i}. {port.device} — {port.description} (USB serial: {port.serial_number or "unknown"})')
-    choice = int(input('Select the connected device number: '))
+    choice = int(ask('Select the connected device number: '))
     if choice < 1 or choice > len(ports):
         raise ValueError('Invalid port selection')
     return ports[choice - 1]
@@ -372,8 +372,17 @@ def connect(port):
     return SerialInterface(devPath=port, timeout=30)
 
 
+def ask(prompt):
+    """ask() that exits cleanly when stdin closes instead of looping."""
+    try:
+        return input(prompt)
+    except EOFError:
+        print('\nInput closed; exiting.')
+        raise SystemExit(0)
+
+
 def confirmed(message):
-    return input(message + ' [y/N]: ').strip().lower() == 'y'
+    return ask(message + ' [y/N]: ').strip().lower() == 'y'
 
 
 def reconnect(port, action, verify, attempts=3):
@@ -522,7 +531,7 @@ def apply_pair(device_path, shared):
             print(f'Assign {path.name} ({kind}) — pick the connected device:')
             for i, (s, dev) in enumerate(entries, 1):
                 print(f'{i}. {dev} (USB serial {s})')
-            pick = int(input('Device number: '))
+            pick = int(ask('Device number: '))
             if pick < 1 or pick > len(entries):
                 raise ValueError('Invalid selection')
             serial, port = entries[pick - 1]
@@ -543,7 +552,7 @@ def enter_dfu(port):
 def resolve_child_number(argv):
     number = argv[1] if len(argv) > 1 else None
     if not number:
-        number = input('Child number: ').strip()
+        number = ask('Child number: ').strip()
     if not re.fullmatch(r'[0-9]+', number):
         raise ValueError('Child number must be numeric')
     return str(int(number))
@@ -568,7 +577,7 @@ def main(argv=None):
         def ensure_device():
             """Resolve which file an action targets; both files existing is fine."""
             if session['device'] is None:
-                asked = input("Which device — handheld (in the child's hand) or beacon (GPS)? ").strip().lower()
+                asked = ask("Which device — handheld (in the child's hand) or beacon (GPS)? ").strip().lower()
                 if asked not in candidates:
                     raise ValueError('Enter handheld or beacon')
                 open_device(asked)
@@ -589,7 +598,7 @@ def main(argv=None):
             print('5 Change name  6 Bluetooth on/off  7 Canned messages selector  8 Radio/rotary profile')
             print('9 Enter DFU mode  10 Apply all (this device)  11 Apply all (pair, auto-detect)  0 Exit')
             try:
-                choice = input('Choice: ').strip()
+                choice = ask('Choice: ').strip()
                 if choice == '0':
                     return
                 if choice == '1':
@@ -610,7 +619,7 @@ def main(argv=None):
                     options = [label for _, label, *_ in channel_plan(dev['kind'], dev['device'], shared)]
                     if shared.get('public_channel'):
                         options.append('public')
-                    chosen = input(f"Channel ({', '.join(options)}): ").strip().lower()
+                    chosen = ask(f"Channel ({', '.join(options)}): ").strip().lower()
                     if chosen == 'public':
                         if not confirmed(f'Apply the public channel to index {public_index(dev["kind"])} on {port}?'):
                             continue
@@ -651,8 +660,8 @@ def main(argv=None):
                     store_qr(family_url(dev['device'], shared), image_path, replace=replace)
                     print('Saved family QR to', image_path, '(contains the family secret; give it to the parents).')
                 elif choice == '5':
-                    long_name = input('Long name: ').strip()
-                    short_name = input('Short name (max 4 UTF-8 bytes): ').strip()
+                    long_name = ask('Long name: ').strip()
+                    short_name = ask('Short name (max 4 UTF-8 bytes): ').strip()
                     if not long_name or len(long_name.encode('utf-8')) > 39 or not short_name or \
                             len(short_name.encode('utf-8')) > 4:
                         raise ValueError('Names exceed device limits')
@@ -661,7 +670,7 @@ def main(argv=None):
                     dev['device'].update(long_name=long_name, short_name=short_name)
                     save_device(dev['path'], dev['device'])
                 elif choice == '6':
-                    state = input('Enable Bluetooth? [y/n]: ').strip().lower()
+                    state = ask('Enable Bluetooth? [y/n]: ').strip().lower()
                     if state not in ('y', 'n'):
                         raise ValueError('Enter y or n')
                     enabled = state == 'y'
@@ -673,7 +682,7 @@ def main(argv=None):
                     if not sets:
                         raise ValueError('shared_messages.json defines no sets; add {"key": "msg1|msg2"} with an editor')
                     print('Available sets:', ', '.join(sorted(sets)))
-                    chosen = input('Set key: ').strip()
+                    chosen = ask('Set key: ').strip()
                     if chosen not in sets:
                         raise ValueError(f'No canned set "{chosen}"')
                     messages = validate_messages(sets[chosen].split('|'))
