@@ -11,7 +11,7 @@ from meshtastic.protobuf import apponly_pb2, channel_pb2, config_pb2, localonly_
 class Node:
     def __init__(self):
         self.channels = [channel_pb2.Channel(index=i) for i in range(8)]
-        self.localConfig = config_pb2.Config()
+        self.localConfig = localonly_pb2.LocalConfig()
         self.moduleConfig = localonly_pb2.LocalModuleConfig()
         self.writes = []
         self.canned = ''
@@ -169,6 +169,8 @@ class DeviceFileTests(unittest.TestCase):
                 other = c.prompt_device(beacon)
             self.assertEqual(other['track_key'], device['track_key'])
             self.assertNotIn('family_key', other)
+            self.assertEqual(c.load_json(beacon)['gps_update_interval'], 120)
+            self.assertNotIn('gps_update_interval', c.load_json(handheld))
             self.assertEqual(c.load_device(handheld)['family_key'], device['family_key'])
 
     def test_beacon_created_first_generates_pair_key(self):
@@ -199,7 +201,21 @@ class DeviceFileTests(unittest.TestCase):
             path.write_text('{"track_key": "ab", "long_name": "x", "short_name": "x", "bluetooth": true}',
                             encoding='utf-8')
             with self.assertRaises(ValueError):
-                c.load_device(path)
+                    c.load_device(path)
+
+    def test_existing_beacon_default_is_saved_after_success_and_edits_survive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / '3-beacon.json'
+            path.write_text('{"track_key":"aa", "long_name":"x", "short_name":"x", "bluetooth":true}',
+                            encoding='utf-8')
+            device = c.load_device(path)
+            self.assertEqual(device['gps_update_interval'], 120)
+            with patch.object(c, 'apply_all'):
+                c.apply_one('SER1', 'beacon', device, {}, path)
+            self.assertEqual(c.load_json(path)['gps_update_interval'], 120)
+            device['gps_update_interval'] = 300
+            c.save_device(path, device)
+            self.assertEqual(c.load_device(path)['gps_update_interval'], 300)
 
     def test_canned_resolution_uses_shared_sets(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -255,8 +271,14 @@ class ApplyAllTests(unittest.TestCase):
                 self.assertEqual(kwargs.get('settle_seconds'), 12)
             self.assertTrue(verify(iface), f'verify failed after {calls[-1]}')
 
+        def fake_apply_gps(serial, interval):
+            calls.append('gps_interval')
+            c.set_gps_update_interval(iface.localNode, interval)
+            self.assertEqual(iface.localNode.localConfig.position.gps_update_interval, interval)
+
         with patch.object(c, 'connect', return_value=iface), \
              patch.object(c, 'reconnect_serial', fake_reconnect), \
+             patch.object(c, 'apply_gps_interval', fake_apply_gps), \
              patch('time.sleep'), \
              patch.object(c, 'update_profile', wrap('profile', c.update_profile)), \
              patch.object(c, 'set_buzzer_pin', wrap('buzzer_pin', c.set_buzzer_pin)), \
@@ -286,7 +308,8 @@ class ApplyAllTests(unittest.TestCase):
     def test_beacon_skips_group_and_uses_full_precision(self):
         device = {'track_key': 'ab' * 32, 'long_name': 'BCN', 'short_name': 'BCN', 'bluetooth': False, 'canned': None}
         calls, iface = self.run_apply('beacon', device, self.shared())
-        self.assertEqual(calls, ['profile', 'buzzer_pin', 'buzzer_notifications', 'channel', 'name', 'bluetooth'])
+        self.assertEqual(calls, ['profile', 'buzzer_pin', 'buzzer_notifications', 'gps_interval', 'channel', 'name', 'bluetooth'])
+        self.assertEqual(iface.localNode.localConfig.position.gps_update_interval, 120)
         self.assertTrue(c.channel_matches(iface.localNode, 0, 'track', bytes.fromhex('ab' * 32), 32))
         self.assertFalse(iface.localNode.localConfig.bluetooth.enabled)
 
@@ -305,7 +328,7 @@ class ApplyAllTests(unittest.TestCase):
     def test_public_channel_applied_when_enabled(self):
         device = {'track_key': 'ab' * 32, 'long_name': 'BCN', 'short_name': 'BCN', 'bluetooth': False, 'canned': None}
         calls, iface = self.run_apply('beacon', device, self.shared(public=True))
-        self.assertEqual(calls, ['profile', 'buzzer_pin', 'buzzer_notifications', 'channel', 'public', 'name', 'bluetooth'])
+        self.assertEqual(calls, ['profile', 'buzzer_pin', 'buzzer_notifications', 'gps_interval', 'channel', 'public', 'name', 'bluetooth'])
         self.assertTrue(c.public_channel_matches(iface.localNode, c.public_index('beacon')))
 
     def test_missing_group_key_aborts_before_any_write(self):
@@ -317,6 +340,24 @@ class ApplyAllTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 c.apply_all('x', 'handheld', device, shared)
             reconnect.assert_not_called()
+
+    def test_edited_interval_is_applied_and_other_position_fields_preserved(self):
+        device = {'track_key': 'ab' * 32, 'long_name': 'BCN', 'short_name': 'BCN', 'bluetooth': False,
+                  'canned': None, 'gps_update_interval': 300}
+        _, iface = self.run_apply('beacon', device, self.shared())
+        self.assertEqual(iface.localNode.localConfig.position.gps_update_interval, 300)
+        node = Node()
+        node.localConfig.position.gps_en_gpio = 40
+        c.set_gps_update_interval(node, 300)
+        self.assertEqual(node.localConfig.position.gps_en_gpio, 40)
+
+    def test_invalid_interval_aborts_before_any_write(self):
+        for value in (True, -1, 2147483648, '120', None, 1.5):
+            with self.subTest(value=value), patch.object(c, 'reconnect_serial') as reconnect:
+                device = {'gps_update_interval': value}
+                with self.assertRaises(ValueError):
+                    c.apply_all('x', 'beacon', device, self.shared())
+                reconnect.assert_not_called()
 
 
 class PairApplyTests(unittest.TestCase):
@@ -393,6 +434,17 @@ class PairApplyTests(unittest.TestCase):
             c.apply_one('SER1', 'beacon', device, self.shared, self.beacon)
             apply_all.assert_called_once_with('SER1', 'beacon', device, self.shared)
         self.assertEqual(c.load_device(self.beacon)['usb_serial'], 'SER1')
+
+    def test_apply_one_preserves_edits_made_during_device_write(self):
+        device = c.load_device(self.beacon)
+        def edit_during_apply(*args):
+            latest = c.load_device(self.beacon)
+            latest['gps_update_interval'] = 300
+            c.save_device(self.beacon, latest)
+        with patch.object(c, 'apply_all', side_effect=edit_during_apply):
+            c.apply_one('SER1', 'beacon', device, self.shared, self.beacon)
+        self.assertEqual(c.load_device(self.beacon)['gps_update_interval'], 300)
+        self.assertEqual(device['gps_update_interval'], 300)
 
     def test_missing_sibling_auto_assigns_the_single_connected_port(self):
         calls = []
@@ -633,6 +685,30 @@ class MessagesTests(unittest.TestCase):
 
 
 class ReadbackTests(unittest.TestCase):
+    def test_gps_interval_waits_for_reboot_without_rewriting(self):
+        persisted = FakeIface()
+        write_iface = FakeIface()
+        def persist(name):
+            persisted.localNode.localConfig.position.CopyFrom(write_iface.localNode.localConfig.position)
+            write_iface.localNode.writes.append(name)
+        write_iface.localNode.writeConfig = persist
+        with patch.object(c, 'connect_serial', side_effect=[write_iface, OSError('rebooting'), persisted]), \
+             patch.object(c, 'safe_close'), patch('time.sleep'):
+            c.apply_gps_interval('SER1', 120)
+        self.assertEqual(write_iface.localNode.writes, ['position'])
+        self.assertEqual(persisted.localNode.writes, [])
+        self.assertEqual(persisted.localNode.localConfig.position.gps_update_interval, 120)
+
+    def test_gps_interval_final_retry_is_verified(self):
+        initial, mismatch, verified = FakeIface(), FakeIface(), FakeIface()
+        verified.localNode.localConfig.position.gps_update_interval = 120
+        with patch.object(c, 'connect_serial', side_effect=[initial, mismatch, verified]), \
+             patch.object(c, 'safe_close'), patch('time.sleep'):
+            c.apply_gps_interval('SER1', 120, attempts=2)
+        self.assertEqual(initial.localNode.writes, ['position'])
+        self.assertEqual(mismatch.localNode.writes, ['position'])
+        self.assertEqual(verified.localNode.writes, [])
+
     def test_readback_failure_is_not_success(self):
         class Fake:
             def close(self):

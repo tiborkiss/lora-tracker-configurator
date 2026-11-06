@@ -55,6 +55,11 @@ Each child *n* owns a **pair** of devices, configured by two files:
   and the pair's private `track_key` (identical in both files, generated
   automatically when the first file is created; the sibling inherits it).
   The handheld file additionally holds the auto-generated `family_key`.
+  Beacon files also contain `gps_update_interval` in seconds, initially 120.
+  Edit this integer in the beacon file to change what Apply all writes; older
+  beacon files use 120 when the field is absent and save it after a successful
+  application. A value of 0 uses the firmware default. Rotary changes affect
+  the device, but Apply all restores the value from the file.
 
 First run for a missing file asks names, Bluetooth and an optional canned
 set key, then stores the JSON. Prepare all files in advance — on the
@@ -76,7 +81,7 @@ workshop PC you then only connect each device and apply.
 9. **Enter DFU mode** — reboots into the bootloader so a new `.uf2` can be
    copied onto the MESHBOOT drive; kids can update firmware without the
    provisioning tool.
-10. **Apply all (this device)** — profile, buzzer, channels (by kind), public
+10. **Apply all (this device)** — profile, buzzer, beacon GPS interval, channels (by kind), public
     channel if enabled, name, Bluetooth, canned set — read-back verified per step.
     On success the board's USB serial number is stored in the device file.
 11. **Apply all (pair, auto-detect)** — plug both devices of the pair into
@@ -123,8 +128,9 @@ stock LongFast slot in `shared.json`, then Apply all to every device; the
 public secondary (empty name, default key) then decodes exactly like their
 primary, while track/family/group keep working unchanged.
 
-Private channels are flooded only by nodes holding their key: group traffic
-is relayed by the whole class, track traffic only by the pair itself.
+Nodes do not need a private channel key to relay its encrypted packets. Relays
+must use compatible radio settings and permit foreign or opaque traffic; relay
+policy, hop limit and coverage affect whether a packet reaches its destination.
 
 Rotating a key disconnects devices still using it: re-apply afterward. Keep
 `local/` and exported QRs private; back them up so keys are not lost. Never

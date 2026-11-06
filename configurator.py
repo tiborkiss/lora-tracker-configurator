@@ -31,6 +31,8 @@ LOCAL = Path(__file__).resolve().parent / 'local'
 SHARED = LOCAL / 'shared.json'
 SHARED_MESSAGES = LOCAL / 'shared_messages.json'
 MAX_MESSAGE_BYTES = 200
+DEFAULT_GPS_UPDATE_INTERVAL = 120
+MAX_GPS_UPDATE_INTERVAL = 2147483647
 
 SHARED_DEFAULTS = {'group_name': 'group', 'group_key': None, 'track_name': 'track',
                    'frequency_slot': 1, 'public_channel': False}
@@ -121,11 +123,15 @@ def sibling_path(path):
 def load_device(path):
     config = load_json(path)
     required = ['track_key', 'long_name', 'short_name', 'bluetooth']
-    if device_kind(path) == 'handheld':
+    kind = device_kind(path)
+    if kind == 'handheld':
         required.append('family_key')
     for field in required:
         if field not in config:
             raise ValueError(f'{path.name} is missing {field}')
+    if kind == 'beacon':
+        config.setdefault('gps_update_interval', DEFAULT_GPS_UPDATE_INTERVAL)
+        gps_update_interval(config)
     return config
 
 
@@ -151,6 +157,8 @@ def prompt_device(path):
     if kind == 'handheld':
         config['family_key'] = secrets.token_hex(32)
         print('A new family key was generated; export the family QR for the parents (menu 4).')
+    else:
+        config['gps_update_interval'] = DEFAULT_GPS_UPDATE_INTERVAL
     canned = ask('Canned set key from shared_messages.json (empty for none): ').strip()
     if canned:
         if canned not in load_shared_messages():
@@ -315,6 +323,18 @@ def profile_matches(node, slot):
 def set_buzzer_pin(node):
     node.localConfig.device.buzzer_gpio = 3  # P0.03
     node.writeConfig('device')
+
+
+def gps_update_interval(device):
+    value = device.get('gps_update_interval', DEFAULT_GPS_UPDATE_INTERVAL)
+    if type(value) is not int or not 0 <= value <= MAX_GPS_UPDATE_INTERVAL:
+        raise ValueError(f'gps_update_interval must be an integer from 0 to {MAX_GPS_UPDATE_INTERVAL} seconds')
+    return value
+
+
+def set_gps_update_interval(node, interval):
+    node.localConfig.position.gps_update_interval = interval
+    node.writeConfig('position')
 
 
 def set_buzzer_notifications(node):
@@ -525,10 +545,44 @@ def reconnect_serial(serial, action, verify, attempts=6, settle_seconds=3):
     raise RuntimeError(f'Could not complete step on device {serial}: {last}')
 
 
+def apply_gps_interval(serial, interval, attempts=6):
+    """Verify through reconnects before retrying a position write that may reboot."""
+    import time
+    last = None
+    try:
+        iface = connect_serial(serial)
+        try:
+            set_gps_update_interval(iface.localNode, interval)
+        finally:
+            safe_close(iface)
+    except Exception as exc:
+        last = exc
+    time.sleep(12)
+    for attempt in range(attempts):
+        try:
+            iface = connect_serial(serial)
+            try:
+                if iface.localNode.localConfig.position.gps_update_interval == interval:
+                    print('Read-back verified.')
+                    return
+                last = RuntimeError('GPS interval read-back did not match')
+                if attempt < attempts - 1:
+                    set_gps_update_interval(iface.localNode, interval)
+            finally:
+                safe_close(iface)
+            if attempt < attempts - 1:
+                time.sleep(12)
+        except Exception as exc:
+            last = exc
+            time.sleep(5)
+    raise RuntimeError(f'Could not verify GPS update interval on device {serial}: {last}')
+
+
 def apply_all(serial, kind, device, shared):
     """Apply every property of the device file (plus shared settings) to the
     device with this USB serial; the port path is re-resolved per step."""
     slot = shared['frequency_slot']
+    interval = gps_update_interval(device) if kind == 'beacon' else None
     steps = [('radio/rotary profile',
               lambda i: update_profile(i.localNode, slot),
               lambda i: profile_matches(i.localNode, slot)),
@@ -538,6 +592,8 @@ def apply_all(serial, kind, device, shared):
              ('buzzer notifications',
               lambda i: set_buzzer_notifications(i.localNode),
               lambda i: buzzer_notifications_match(i.localNode))]
+    if kind == 'beacon':
+        steps.append(('GPS update interval', None, None))
     for index, label, name, key, precision in channel_plan(kind, device, shared):
         steps.append((f'{label} channel',
                       lambda i, idx=index, n=name, k=key, p=precision: update_channel(i.localNode, idx, n, k, p),
@@ -563,7 +619,9 @@ def apply_all(serial, kind, device, shared):
                       i.getCannedMessage() == messages))
     for label, action, verify in steps:
         print('Applying', label, '…')
-        if label in ('buzzer pin', 'buzzer notifications'):
+        if label == 'GPS update interval':
+            apply_gps_interval(serial, interval)
+        elif label in ('buzzer pin', 'buzzer notifications'):
             reconnect_serial(serial, action, verify, settle_seconds=12)
         else:
             reconnect_serial(serial, action, verify)
@@ -573,8 +631,11 @@ def apply_all(serial, kind, device, shared):
 def apply_one(serial, kind, device, shared, path):
     """Apply one device file and remember which USB serial it belongs to."""
     apply_all(serial, kind, device, shared)
-    device['usb_serial'] = serial
-    save_device(path, device)
+    latest = load_device(path)
+    latest['usb_serial'] = serial
+    save_device(path, latest)
+    device.clear()
+    device.update(latest)
 
 
 def port_names(entries):
@@ -776,6 +837,7 @@ def main(argv=None):
                 dev = None
                 if choice in ('2', '3', '5', '6', '7', '8', '9', '10'):
                     dev = ensure_device()
+                    dev['device'] = load_device(dev['path'])
                     selected = choose_port()
                     port = selected.device
                     resolve_selected(selected, session, candidates)
