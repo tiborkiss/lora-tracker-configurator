@@ -312,6 +312,31 @@ def profile_matches(node, slot):
             (events.RIGHT, events.LEFT, events.SELECT))
 
 
+def set_buzzer_pin(node):
+    node.localConfig.device.buzzer_gpio = 3  # P0.03
+    node.writeConfig('device')
+
+
+def set_buzzer_notifications(node):
+    notification = node.moduleConfig.external_notification
+    notification.enabled = True
+    notification.use_pwm = True
+    notification.use_i2s_as_buzzer = False
+    notification.output_buzzer = 3
+    notification.alert_message_buzzer = True
+    notification.alert_bell_buzzer = True
+    notification.output_ms = 4000
+    notification.nag_timeout = 0
+    node.writeConfig('external_notification')
+
+
+def buzzer_notifications_match(node):
+    notification = node.moduleConfig.external_notification
+    return (notification.enabled and notification.use_pwm and not notification.use_i2s_as_buzzer and
+            notification.output_buzzer == 3 and notification.alert_message_buzzer and
+            notification.alert_bell_buzzer and notification.output_ms == 4000 and notification.nag_timeout == 0)
+
+
 def set_bluetooth(iface, enabled):
     from meshtastic.protobuf import config_pb2
     iface.localNode.localConfig.bluetooth.enabled = enabled
@@ -472,7 +497,7 @@ def connect_serial(serial):
     return connect(path)
 
 
-def reconnect_serial(serial, action, verify, attempts=6):
+def reconnect_serial(serial, action, verify, attempts=6, settle_seconds=3):
     """reconnect() for a USB serial: re-resolves the port path on every
     attempt, waiting out reboots and re-enumerations."""
     import time
@@ -484,7 +509,7 @@ def reconnect_serial(serial, action, verify, attempts=6):
                 action(iface)
             finally:
                 safe_close(iface)
-            time.sleep(3)
+            time.sleep(settle_seconds)
             iface = connect_serial(serial)
             try:
                 if not verify(iface):
@@ -506,7 +531,13 @@ def apply_all(serial, kind, device, shared):
     slot = shared['frequency_slot']
     steps = [('radio/rotary profile',
               lambda i: update_profile(i.localNode, slot),
-              lambda i: profile_matches(i.localNode, slot))]
+              lambda i: profile_matches(i.localNode, slot)),
+             ('buzzer pin',
+              lambda i: set_buzzer_pin(i.localNode),
+              lambda i: i.localNode.localConfig.device.buzzer_gpio == 3),
+             ('buzzer notifications',
+              lambda i: set_buzzer_notifications(i.localNode),
+              lambda i: buzzer_notifications_match(i.localNode))]
     for index, label, name, key, precision in channel_plan(kind, device, shared):
         steps.append((f'{label} channel',
                       lambda i, idx=index, n=name, k=key, p=precision: update_channel(i.localNode, idx, n, k, p),
@@ -532,7 +563,10 @@ def apply_all(serial, kind, device, shared):
                       i.getCannedMessage() == messages))
     for label, action, verify in steps:
         print('Applying', label, '…')
-        reconnect_serial(serial, action, verify)
+        if label in ('buzzer pin', 'buzzer notifications'):
+            reconnect_serial(serial, action, verify, settle_seconds=12)
+        else:
+            reconnect_serial(serial, action, verify)
     print('All settings applied and read-back verified.')
 
 

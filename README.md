@@ -76,8 +76,8 @@ workshop PC you then only connect each device and apply.
 9. **Enter DFU mode** — reboots into the bootloader so a new `.uf2` can be
    copied onto the MESHBOOT drive; kids can update firmware without the
    provisioning tool.
-10. **Apply all (this device)** — profile, channels (by kind), public channel
-    if enabled, name, Bluetooth, canned set — read-back verified per step.
+10. **Apply all (this device)** — profile, buzzer, channels (by kind), public
+    channel if enabled, name, Bluetooth, canned set — read-back verified per step.
     On success the board's USB serial number is stored in the device file.
 11. **Apply all (pair, auto-detect)** — plug both devices of the pair into
     one PC and run this. It first resolves the full assignment — matching
@@ -103,6 +103,12 @@ workshop PC you then only connect each device and apply.
 
 Every write reconnects and reads back; a mismatch is reported as an error but
 may require inspecting a partially applied configuration.
+
+Apply all configures the P0.03 PWM buzzer for incoming messages and bells on
+both devices, with a four-second notification window. Sound is enabled by
+default on a fresh device. The device's existing sound mode is preserved on
+reapplication: use the rotary's **System → Notifications** menu to choose
+**All Disabled** for silence or turn sounds back on.
 
 ## Frequency slots and the public channel (why it is a network-wide switch)
 

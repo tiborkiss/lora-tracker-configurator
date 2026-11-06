@@ -96,6 +96,29 @@ class ChannelTests(unittest.TestCase):
         node.channels[1].settings.psk = b'\x02'
         self.assertFalse(c.public_channel_matches(node, 1))
 
+    def test_buzzer_setup_preserves_sound_mode_and_other_settings(self):
+        node = Node()
+        node.localConfig.device.buzzer_mode = config_pb2.Config.DeviceConfig.DISABLED
+        node.localConfig.device.node_info_broadcast_secs = 321
+        node.moduleConfig.external_notification.output = 7
+        node.moduleConfig.external_notification.use_i2s_as_buzzer = True
+        node.moduleConfig.external_notification.nag_timeout = 60
+        c.set_buzzer_pin(node)
+        c.set_buzzer_notifications(node)
+        self.assertEqual(node.localConfig.device.buzzer_gpio, 3)
+        self.assertEqual(node.localConfig.device.buzzer_mode, config_pb2.Config.DeviceConfig.DISABLED)
+        self.assertEqual(node.localConfig.device.node_info_broadcast_secs, 321)
+        self.assertEqual(node.moduleConfig.external_notification.output, 7)
+        self.assertTrue(c.buzzer_notifications_match(node))
+        self.assertEqual(node.writes, ['device', 'external_notification'])
+        for field, value in [('use_pwm', False), ('use_i2s_as_buzzer', True), ('nag_timeout', 60),
+                             ('output_buzzer', 4), ('alert_message_buzzer', False), ('alert_bell_buzzer', False),
+                             ('output_ms', 1), ('enabled', False)]:
+            fresh = Node()
+            fresh.moduleConfig.CopyFrom(node.moduleConfig)
+            setattr(fresh.moduleConfig.external_notification, field, value)
+            self.assertFalse(c.buzzer_notifications_match(fresh), field)
+
 
 class SharedTests(unittest.TestCase):
     def test_defaults_and_group_key_persisted_before_use(self):
@@ -226,14 +249,18 @@ class ApplyAllTests(unittest.TestCase):
                 return original(*args, **kwargs)
             return wrapper
 
-        def fake_reconnect(serial, action, verify):
+        def fake_reconnect(serial, action, verify, **kwargs):
             action(iface)
+            if calls[-1] in ('buzzer_pin', 'buzzer_notifications'):
+                self.assertEqual(kwargs.get('settle_seconds'), 12)
             self.assertTrue(verify(iface), f'verify failed after {calls[-1]}')
 
         with patch.object(c, 'connect', return_value=iface), \
              patch.object(c, 'reconnect_serial', fake_reconnect), \
              patch('time.sleep'), \
              patch.object(c, 'update_profile', wrap('profile', c.update_profile)), \
+             patch.object(c, 'set_buzzer_pin', wrap('buzzer_pin', c.set_buzzer_pin)), \
+             patch.object(c, 'set_buzzer_notifications', wrap('buzzer_notifications', c.set_buzzer_notifications)), \
              patch.object(c, 'update_channel', wrap('channel', c.update_channel)), \
              patch.object(c, 'apply_public_channel', wrap('public', c.apply_public_channel)), \
              patch.object(c, 'set_bluetooth', wrap('bluetooth', c.set_bluetooth)), \
@@ -249,7 +276,7 @@ class ApplyAllTests(unittest.TestCase):
             messages.write_text('{"workshop": "hi"}', encoding='utf-8')
             with patch.object(c, 'SHARED_MESSAGES', messages):
                 calls, iface = self.run_apply('handheld', device, self.shared())
-        self.assertEqual(calls, ['profile', 'channel', 'channel', 'channel', 'name', 'bluetooth', 'canned'])
+        self.assertEqual(calls, ['profile', 'buzzer_pin', 'buzzer_notifications', 'channel', 'channel', 'channel', 'name', 'bluetooth', 'canned'])
         self.assertTrue(c.channel_matches(iface.localNode, 0, 'track', bytes.fromhex('ab' * 32), 0))
         self.assertTrue(c.channel_matches(iface.localNode, 1, 'family', bytes.fromhex('cd' * 32), 0))
         self.assertTrue(c.channel_matches(iface.localNode, 2, 'group', bytes.fromhex('ef' * 32), 0))
@@ -259,14 +286,26 @@ class ApplyAllTests(unittest.TestCase):
     def test_beacon_skips_group_and_uses_full_precision(self):
         device = {'track_key': 'ab' * 32, 'long_name': 'BCN', 'short_name': 'BCN', 'bluetooth': False, 'canned': None}
         calls, iface = self.run_apply('beacon', device, self.shared())
-        self.assertEqual(calls, ['profile', 'channel', 'name', 'bluetooth'])
+        self.assertEqual(calls, ['profile', 'buzzer_pin', 'buzzer_notifications', 'channel', 'name', 'bluetooth'])
         self.assertTrue(c.channel_matches(iface.localNode, 0, 'track', bytes.fromhex('ab' * 32), 32))
         self.assertFalse(iface.localNode.localConfig.bluetooth.enabled)
+
+    def test_buzzer_configuration_survives_protobuf_roundtrip(self):
+        original = Node()
+        original.localConfig.device.buzzer_mode = config_pb2.Config.DeviceConfig.DISABLED
+        c.set_buzzer_pin(original)
+        c.set_buzzer_notifications(original)
+        readback = Node()
+        readback.localConfig.ParseFromString(original.localConfig.SerializeToString())
+        readback.moduleConfig.ParseFromString(original.moduleConfig.SerializeToString())
+        self.assertEqual(readback.localConfig.device.buzzer_gpio, 3)
+        self.assertEqual(readback.localConfig.device.buzzer_mode, config_pb2.Config.DeviceConfig.DISABLED)
+        self.assertTrue(c.buzzer_notifications_match(readback))
 
     def test_public_channel_applied_when_enabled(self):
         device = {'track_key': 'ab' * 32, 'long_name': 'BCN', 'short_name': 'BCN', 'bluetooth': False, 'canned': None}
         calls, iface = self.run_apply('beacon', device, self.shared(public=True))
-        self.assertEqual(calls, ['profile', 'channel', 'public', 'name', 'bluetooth'])
+        self.assertEqual(calls, ['profile', 'buzzer_pin', 'buzzer_notifications', 'channel', 'public', 'name', 'bluetooth'])
         self.assertTrue(c.public_channel_matches(iface.localNode, c.public_index('beacon')))
 
     def test_missing_group_key_aborts_before_any_write(self):
