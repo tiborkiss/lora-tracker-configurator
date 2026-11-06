@@ -304,11 +304,12 @@ class PairApplyTests(unittest.TestCase):
             c.save_device(path, device)
 
         # beacon: two free ports -> prompt, pick SER1; handheld: one free
-        # port remains -> assigned automatically without a prompt
+        # port remains -> planned automatically; one confirm applies both
         answers = iter(['1'])
         with patch.object(c, 'connected_serials',
                           return_value={'SER1': '/dev/ttyA', 'SER2': '/dev/ttyB'}), \
              patch.object(c, 'apply_one', fake_apply_one), \
+             patch.object(c, 'confirmed', return_value=True), \
              patch('builtins.input', lambda _: next(answers)):
             c.apply_pair(self.beacon, self.shared)
         self.assertEqual(calls, [('1-beacon.json', 'SER1', 'beacon'),
@@ -327,7 +328,8 @@ class PairApplyTests(unittest.TestCase):
         with patch.object(c, 'connected_serials',
                           return_value={'SER1': '/dev/ttyA', 'SER2': '/dev/ttyB'}), \
              patch.object(c, 'apply_one', lambda *a: calls.append((a[4].name, a[0]))), \
-             patch('builtins.input', side_effect=AssertionError('no prompt expected')):
+             patch.object(c, 'confirmed', return_value=True), \
+             patch('builtins.input', side_effect=AssertionError('no assignment prompt expected')):
             c.apply_pair(self.beacon, self.shared)
         self.assertEqual(calls, [('1-beacon.json', 'SER1'),
                                  ('1-handheld.json', 'SER2')])
@@ -341,7 +343,8 @@ class PairApplyTests(unittest.TestCase):
         c.save_device(self.handheld, device)
         calls = []
         with patch.object(c, 'connected_serials', return_value={'SER2': '/dev/ttyB'}), \
-             patch.object(c, 'apply_one', lambda *a: calls.append(a[4].name)):
+             patch.object(c, 'apply_one', lambda *a: calls.append(a[4].name)), \
+             patch.object(c, 'confirmed', return_value=True):
             c.apply_pair(self.beacon, self.shared)
         self.assertEqual(calls, ['1-handheld.json'])
 
@@ -362,10 +365,43 @@ class PairApplyTests(unittest.TestCase):
 
         with patch.object(c, 'connected_serials', return_value={'SER1': '/dev/ttyA'}), \
              patch.object(c, 'apply_one', fake_apply_one), \
-             patch('builtins.input', side_effect=AssertionError('no prompt expected')):
+             patch.object(c, 'confirmed', return_value=True), \
+             patch('builtins.input', side_effect=AssertionError('no assignment prompt expected')):
             c.apply_pair(self.beacon, self.shared)
         self.assertEqual(calls, ['1-beacon.json'])
         self.assertEqual(c.load_device(self.beacon)['usb_serial'], 'SER1')
+
+    def test_declining_the_plan_writes_nothing(self):
+        device = c.load_device(self.beacon)
+        device['usb_serial'] = 'SER1'
+        c.save_device(self.beacon, device)
+        with patch.object(c, 'connected_serials', return_value={'SER1': '/dev/ttyA'}), \
+             patch.object(c, 'apply_one') as apply_one, \
+             patch.object(c, 'confirmed', return_value=False):
+            with __import__('io').StringIO() as out:
+                with __import__('contextlib').redirect_stdout(out):
+                    c.apply_pair(self.beacon, self.shared)
+                text = out.getvalue()
+        apply_one.assert_not_called()
+        self.assertIn('Aborted; nothing was written.', text)
+        self.assertEqual(c.load_device(self.handheld).get('usb_serial'), None)  # untouched
+
+    def test_plan_lists_assignments_before_any_write(self):
+        device = c.load_device(self.beacon)
+        device['usb_serial'] = 'SER1'
+        c.save_device(self.beacon, device)
+        with patch.object(c, 'connected_serials', return_value={'SER1': '/dev/ttyA', 'SER2': '/dev/ttyB'}), \
+             patch.object(c, 'apply_one') as apply_one, \
+             patch.object(c, 'confirmed', return_value=False):
+            with __import__('io').StringIO() as out:
+                with __import__('contextlib').redirect_stdout(out):
+                    c.apply_pair(self.beacon, self.shared)
+                text = out.getvalue()
+        apply_one.assert_not_called()
+        self.assertIn('Plan:', text)
+        self.assertIn('1-beacon.json (beacon) → /dev/ttyA', text)
+        self.assertIn('1-handheld.json', text)  # unbound single free port, planned too
+        self.assertIn('Aborted', text)
 
     def test_port_names_reads_owner_and_tolerates_failures(self):
         class Reachable:

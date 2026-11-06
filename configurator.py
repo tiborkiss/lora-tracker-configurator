@@ -593,51 +593,73 @@ def resolve_selected(selected, session, candidates):
         raise ValueError('Operation aborted; no changes made.')
 
 
-def apply_pair(device_path, shared):
-    """Apply both files of a pair, matching plugged-in devices by USB serial.
+def pair_plan(device_path, shared):
+    """Resolve what apply_pair would do, without writing anything.
 
-    First time through, the operator is asked once which port is which;
-    the binding is stored in the JSON files and reused forever after.
+    Returns (steps, notes): steps are (path, kind, device, serial, port)
+    tuples ready to apply; notes explain skips. Assignment questions are
+    asked here, so every decision is made before the first write.
     """
     ports = connected_serials()
     claimed = set()
+    steps = []
+    notes = []
     for path in (device_path, sibling_path(device_path)):
         if not path.exists():
-            print(path.name, 'does not exist; skipped.')
+            notes.append(f'{path.name} does not exist; skipped.')
             continue
         kind = device_kind(path)
         device = load_device(path)
         serial = device.get('usb_serial')
         if serial and serial in ports:
-            print(f'{path.name} matched to {ports[serial]} by USB serial.')
-            apply_one(serial, kind, device, shared, path)
+            steps.append((path, kind, device, serial, ports[serial]))
             claimed.add(serial)
             continue
         if serial:
-            print(f'{path.name} is bound to USB serial {serial}, which is not connected; skipped.')
+            notes.append(f'{path.name} is bound to USB serial {serial}, which is not connected; skipped.')
             continue
         free = {s: dev for s, dev in ports.items() if s not in claimed}
         if not free:
-            print('No unclaimed port for', path.name, '; connect it and run again.')
+            notes.append(f'No unclaimed port for {path.name}; connect it and run again.')
             continue
         entries = sorted(free.items())
         if len(entries) == 1:
             serial, port = entries[0]
-            print(f'Only one unclaimed port — assigning {path.name} to {port}.')
+            notes.append(f'{path.name}: only one unclaimed port — will assign {port}.')
         else:
             # The serial is informational; answer with the list number. The
             # list is a snapshot: if boards are swapped, rerun this menu.
-            print(f'Assign {path.name} ({kind}) — pick the connected device:')
             print('(inspecting the boards…)')
             names = port_names(entries)
+            print(f'Assign {path.name} ({kind}) — pick the connected device:')
             for i, (s, dev) in enumerate(entries, 1):
                 print(f'{i}. {dev} (USB serial {s}) — currently "{names.get(s, "?")}"')
             pick = int(ask('Device number: '))
             if pick < 1 or pick > len(entries):
                 raise ValueError('Invalid selection')
             serial, port = entries[pick - 1]
-        apply_one(serial, kind, device, shared, path)
+        steps.append((path, kind, device, serial, port))
         claimed.add(serial)
+    return steps, notes
+
+
+def apply_pair(device_path, shared):
+    """Print the full file→port plan, confirm once, then apply the pair."""
+    steps, notes = pair_plan(device_path, shared)
+    for note in notes:
+        print(f'  ({note})')
+    if not steps:
+        print('Nothing to apply.')
+        return
+    print('Plan:')
+    for path, kind, device, serial, port in steps:
+        print(f'  {path.name} ({kind}) → {port}   [USB serial {serial}]')
+    if not confirmed(f'Apply {len(steps)} device file(s)?'):
+        print('Aborted; nothing was written.')
+        return
+    for path, kind, device, serial, port in steps:
+        print(f'=== {path.name} → {port} ===')
+        apply_one(serial, kind, device, shared, path)
     print('Pair application finished.')
 
 
@@ -824,9 +846,7 @@ def main(argv=None):
                     for path in (anchor, sibling_path(anchor)):
                         if not path.exists() and confirmed(f'{path.name} does not exist — create it now?'):
                             prompt_device(path)
-                    if not confirmed('Apply the pair files to the connected devices (auto-detected)?'):
-                        continue
-                    apply_pair(anchor, shared)
+                    apply_pair(anchor, shared)  # prints the plan, confirms, applies
                 else:
                     print('Unknown choice.')
             except Exception as exc:  # device stacks raise arbitrary types

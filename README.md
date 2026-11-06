@@ -80,15 +80,25 @@ workshop PC you then only connect each device and apply.
     if enabled, name, Bluetooth, canned set — read-back verified per step.
     On success the board's USB serial number is stored in the device file.
 11. **Apply all (pair, auto-detect)** — plug both devices of the pair into
-    one PC and run this once: each file is matched to its board by USB
-    serial and applied automatically. The very first time (or when a board
-    is new/replaced) the tool asks which port is which, records the
-    binding, and every later run needs no questions. You answer by list
-    number — the serial shown is informational. Easiest: plug one board at
-    a time; a single unclaimed port is assigned without asking. The port
-    list is a snapshot — do not swap boards while the prompt is open;
-    rerun the menu instead. A wrong first-time assignment is fixed by
-    deleting the `usb_serial` field from the two files and re-running.
+    one PC and run this. It first resolves the full assignment — matching
+    boards by USB serial, auto-assigning a lone unclaimed port, asking
+    (with each board's current name shown) when several ports are free —
+    then prints the **plan** and applies after a single confirmation:
+
+        Plan:
+          1-beacon.json (beacon) → /dev/ttyACM1   [USB serial 021D…]
+          1-handheld.json (handheld) → /dev/ttyACM0   [USB serial FDBF…]
+          (1-beacon.json is bound to USB serial …, which is not connected; skipped.)
+        Apply 2 device file(s)? [y/N]:
+
+    All questions are answered before anything is written; declining
+    leaves both boards untouched. Bindings are remembered, so later runs
+    need no questions. You answer by list number — the serial shown is
+    informational. Easiest: plug one board at a time; a single unclaimed
+    port is planned without asking. The port list is a snapshot — do not
+    swap boards while the prompt is open; rerun the menu instead. A wrong
+    first-time assignment is fixed by deleting the `usb_serial` field from
+    the two files and re-running.
 0. Exit.
 
 Every write reconnects and reads back; a mismatch is reported as an error but
