@@ -104,6 +104,12 @@ workshop PC you then only connect each device and apply.
     swap boards while the prompt is open; rerun the menu instead. A wrong
     first-time assignment is fixed by deleting the `usb_serial` field from
     the two files and re-running.
+12. **Power mode (beacon)** — toggles a beacon between
+    **INTERACTIVE CLIENT** (screen wakes on rotary, normal cycles) and
+    **STEALTH TRACKER** (dark screen, sleepy low-power cycles, deaf between
+    wakes). Confirmed before writing; read-back verified. Beacons only —
+    handhelds have no GPS and cannot use this mode. `Apply all` does not
+    change the power mode; run 12 again to switch back.
 0. Exit.
 
 Every write reconnects and reads back; a mismatch is reported as an error but

@@ -320,9 +320,38 @@ def profile_matches(node, slot):
             (events.RIGHT, events.LEFT, events.SELECT))
 
 
+def set_gps_update_interval(node, interval):
+    node.localConfig.position.gps_update_interval = interval
+    node.writeConfig('position')
+
+
 def set_buzzer_pin(node):
     node.localConfig.device.buzzer_gpio = 3  # P0.03
     node.writeConfig('device')
+
+
+def set_stealth_mode(iface, stealth):
+    """Switch a beacon between interactive CLIENT and stealth tracker operation.
+
+    Stealth = role TRACKER + power.is_power_saving (sleepy cycles, dark screen);
+    interactive = role CLIENT + power saving off. Both writes reboot the device,
+    so the caller runs them under the reconnect-retry pattern.
+    """
+    from meshtastic.protobuf import config_pb2
+    local = iface.localNode.localConfig
+    local.device.role = (config_pb2.Config.DeviceConfig.TRACKER if stealth
+                         else config_pb2.Config.DeviceConfig.CLIENT)
+    local.power.is_power_saving = stealth
+    iface.localNode.writeConfig('device')
+    iface.localNode.writeConfig('power')
+
+
+def stealth_mode_matches(iface, stealth):
+    from meshtastic.protobuf import config_pb2
+    local = iface.localNode.localConfig
+    want_role = (config_pb2.Config.DeviceConfig.TRACKER if stealth
+                 else config_pb2.Config.DeviceConfig.CLIENT)
+    return local.device.role == want_role and local.power.is_power_saving == stealth
 
 
 def gps_update_interval(device):
@@ -822,7 +851,8 @@ def main(argv=None):
             print(f'\n[{context}]')
             print('1 Create group key (once)  2 Configure channel  3 Export track QR  4 Export family QR')
             print('5 Change name  6 Bluetooth on/off  7 Canned messages selector  8 Radio/rotary profile')
-            print('9 Enter DFU mode  10 Apply all (this device)  11 Apply all (pair, auto-detect)  0 Exit')
+            print('9 Enter DFU mode  10 Apply all (this device)  11 Apply all (pair, auto-detect)')
+            print('12 Power mode (beacon)  0 Exit')
             try:
                 choice = ask('Choice: ').strip()
                 if choice == '0':
@@ -937,6 +967,22 @@ def main(argv=None):
                     if not confirmed('Apply every setting from the JSON files?'):
                         continue
                     apply_one(selected.serial_number, dev['kind'], dev['device'], shared, dev['path'])
+                elif choice == '12':
+                    if dev['kind'] != 'beacon':
+                        raise ValueError('Power mode switching applies to beacon devices only')
+                    iface = connect_serial(selected.serial_number)
+                    try:
+                        stealth = not stealth_mode_matches(iface, True)
+                    finally:
+                        safe_close(iface)
+                    label = ('STEALTH TRACKER (dark screen, sleepy cycles, deaf between wakes)' if stealth
+                             else 'INTERACTIVE CLIENT (screen wakes on rotary, normal cycles)')
+                    if not confirmed(f'Switch beacon to {label}?'):
+                        continue
+                    reconnect_serial(selected.serial_number, lambda i: set_stealth_mode(i, stealth),
+                                     lambda i: stealth_mode_matches(i, stealth), settle_seconds=12)
+                    print('Power mode applied and read-back verified.'
+                          ' Apply all does not change it; run this action again to switch back.')
                 elif choice == '11':
                     anchor = session['path'] or candidates['beacon']
                     for path in (anchor, sibling_path(anchor)):

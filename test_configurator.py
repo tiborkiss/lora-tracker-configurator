@@ -735,5 +735,32 @@ class ReadbackTests(unittest.TestCase):
                 c.reconnect_serial('SER1', lambda _: None, lambda _: True, attempts=2)
 
 
+class PowerModeTests(unittest.TestCase):
+    def test_set_stealth_mode_writes_role_and_power_both_directions(self):
+        node = Node()
+        iface = FakeIface()
+        iface.localNode = node
+        c.set_stealth_mode(iface, True)
+        self.assertEqual(node.localConfig.device.role, config_pb2.Config.DeviceConfig.TRACKER)
+        self.assertTrue(node.localConfig.power.is_power_saving)
+        self.assertEqual(node.writes, ['device', 'power'])
+        self.assertTrue(c.stealth_mode_matches(iface, True))
+        self.assertFalse(c.stealth_mode_matches(iface, False))
+        c.set_stealth_mode(iface, False)
+        self.assertEqual(node.localConfig.device.role, config_pb2.Config.DeviceConfig.CLIENT)
+        self.assertFalse(node.localConfig.power.is_power_saving)
+        self.assertTrue(c.stealth_mode_matches(iface, False))
+        self.assertEqual(node.writes, ['device', 'power', 'device', 'power'])
+
+    def test_stealth_mode_matches_ignores_other_role_changes(self):
+        node = Node()
+        iface = FakeIface()
+        iface.localNode = node
+        node.localConfig.device.role = config_pb2.Config.DeviceConfig.CLIENT
+        node.localConfig.power.is_power_saving = False
+        self.assertFalse(c.stealth_mode_matches(iface, True))
+        self.assertTrue(c.stealth_mode_matches(iface, False))
+
+
 if __name__ == '__main__':
     unittest.main()
