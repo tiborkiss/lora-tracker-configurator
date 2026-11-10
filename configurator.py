@@ -330,20 +330,30 @@ def set_buzzer_pin(node):
     node.writeConfig('device')
 
 
+STEALTH_BROADCAST_SECS = 1800  # stealth deep-sleep period (30 min); also the broadcast period
+INTERACTIVE_BROADCAST_SECS = 900  # Meshtastic default restored when leaving stealth
+
+
 def set_stealth_mode(iface, stealth):
     """Switch a beacon between interactive CLIENT and stealth tracker operation.
 
-    Stealth = role TRACKER + power.is_power_saving (sleepy cycles, dark screen);
-    interactive = role CLIENT + power saving off. Both writes reboot the device,
-    so the caller runs them under the reconnect-retry pattern.
+    Stealth = role TRACKER + power.is_power_saving (sleepy cycles, dark screen)
+    with a 30-minute wake period; interactive = role CLIENT + power saving off
+    with the default 15-minute period. In power-saving mode the firmware uses
+    position_broadcast_secs as the deep-sleep duration, so it is written with
+    the mode. Writes reboot the device, so the caller runs them under the
+    reconnect-retry pattern.
     """
     from meshtastic.protobuf import config_pb2
     local = iface.localNode.localConfig
     local.device.role = (config_pb2.Config.DeviceConfig.TRACKER if stealth
                          else config_pb2.Config.DeviceConfig.CLIENT)
     local.power.is_power_saving = stealth
+    local.position.position_broadcast_secs = (STEALTH_BROADCAST_SECS if stealth
+                                              else INTERACTIVE_BROADCAST_SECS)
     iface.localNode.writeConfig('device')
     iface.localNode.writeConfig('power')
+    iface.localNode.writeConfig('position')
 
 
 def stealth_mode_matches(iface, stealth):
@@ -351,7 +361,10 @@ def stealth_mode_matches(iface, stealth):
     local = iface.localNode.localConfig
     want_role = (config_pb2.Config.DeviceConfig.TRACKER if stealth
                  else config_pb2.Config.DeviceConfig.CLIENT)
-    return local.device.role == want_role and local.power.is_power_saving == stealth
+    want_secs = STEALTH_BROADCAST_SECS if stealth else INTERACTIVE_BROADCAST_SECS
+    return (local.device.role == want_role
+            and local.power.is_power_saving == stealth
+            and local.position.position_broadcast_secs == want_secs)
 
 
 def gps_update_interval(device):

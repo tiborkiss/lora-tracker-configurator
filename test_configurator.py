@@ -736,21 +736,26 @@ class ReadbackTests(unittest.TestCase):
 
 
 class PowerModeTests(unittest.TestCase):
-    def test_set_stealth_mode_writes_role_and_power_both_directions(self):
+    def test_set_stealth_mode_writes_role_power_position_both_directions(self):
         node = Node()
         iface = FakeIface()
         iface.localNode = node
         c.set_stealth_mode(iface, True)
         self.assertEqual(node.localConfig.device.role, config_pb2.Config.DeviceConfig.TRACKER)
         self.assertTrue(node.localConfig.power.is_power_saving)
-        self.assertEqual(node.writes, ['device', 'power'])
+        self.assertEqual(node.localConfig.position.position_broadcast_secs,
+                         c.STEALTH_BROADCAST_SECS)
+        self.assertEqual(node.writes, ['device', 'power', 'position'])
         self.assertTrue(c.stealth_mode_matches(iface, True))
         self.assertFalse(c.stealth_mode_matches(iface, False))
         c.set_stealth_mode(iface, False)
         self.assertEqual(node.localConfig.device.role, config_pb2.Config.DeviceConfig.CLIENT)
         self.assertFalse(node.localConfig.power.is_power_saving)
+        self.assertEqual(node.localConfig.position.position_broadcast_secs,
+                         c.INTERACTIVE_BROADCAST_SECS)
         self.assertTrue(c.stealth_mode_matches(iface, False))
-        self.assertEqual(node.writes, ['device', 'power', 'device', 'power'])
+        self.assertEqual(node.writes,
+                         ['device', 'power', 'position', 'device', 'power', 'position'])
 
     def test_stealth_mode_matches_ignores_other_role_changes(self):
         node = Node()
@@ -759,7 +764,15 @@ class PowerModeTests(unittest.TestCase):
         node.localConfig.device.role = config_pb2.Config.DeviceConfig.CLIENT
         node.localConfig.power.is_power_saving = False
         self.assertFalse(c.stealth_mode_matches(iface, True))
-        self.assertTrue(c.stealth_mode_matches(iface, False))
+
+    def test_stealth_mode_matches_requires_matching_period(self):
+        node = Node()
+        iface = FakeIface()
+        iface.localNode = node
+        c.set_stealth_mode(iface, True)
+        # A stealth device left on the default 60 s period is not yet configured.
+        node.localConfig.position.position_broadcast_secs = 60
+        self.assertFalse(c.stealth_mode_matches(iface, True))
 
 
 if __name__ == '__main__':
