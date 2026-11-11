@@ -144,3 +144,7 @@ Rotating a key disconnects devices still using it: re-apply afterward. Keep
 commit or share the keys by accident.
 
 Run offline tests with `python -m unittest -v`.
+
+## License
+
+Distributed under the MIT License. See [LICENSE](LICENSE).
