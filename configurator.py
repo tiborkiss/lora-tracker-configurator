@@ -653,7 +653,7 @@ def apply_all(serial, kind, device, shared):
               lambda i: set_buzzer_notifications(i.localNode),
               lambda i: buzzer_notifications_match(i.localNode))]
     if interval is not None:
-        steps.append(('GPS update interval', None, None))
+        steps.append((f'GPS update interval ({interval} s)', None, None))
     for index, label, name, key, precision in channel_plan(kind, device, shared):
         steps.append((f'{label} channel',
                       lambda i, idx=index, n=name, k=key, p=precision: update_channel(i.localNode, idx, n, k, p),
@@ -681,7 +681,7 @@ def apply_all(serial, kind, device, shared):
                   i.getCannedMessage() == messages))
     for label, action, verify in steps:
         print('Applying', label, '…')
-        if label == 'GPS update interval':
+        if label.startswith('GPS update interval'):
             apply_gps_interval(serial, interval)
         elif label in ('buzzer pin', 'buzzer notifications'):
             reconnect_serial(serial, action, verify, settle_seconds=12)
