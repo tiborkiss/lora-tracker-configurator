@@ -158,7 +158,7 @@ class DeviceFileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             handheld = Path(tmp) / '2-handheld.json'
             beacon = Path(tmp) / '2-beacon.json'
-            answers = iter(['Kid Two', 'K2', 'y', 'workshop'])
+            answers = iter(['Kid Two', 'K2', 'y', 'n', 'workshop'])
             messages = Path(tmp) / 'shared_messages.json'
             messages.write_text('{"workshop": "hi|ho"}', encoding='utf-8')
             with patch.object(c, 'SHARED_MESSAGES', messages), patch('builtins.input', lambda _: next(answers)):
@@ -180,7 +180,7 @@ class DeviceFileTests(unittest.TestCase):
             answers = iter(['Beacon', 'BCN', 'y', ''])
             with patch('builtins.input', lambda _: next(answers)):
                 first = c.prompt_device(beacon)
-            answers = iter(['Kid', 'KID', 'n', ''])
+            answers = iter(['Kid', 'KID', 'n', 'n', ''])
             with patch('builtins.input', lambda _: next(answers)):
                 second = c.prompt_device(handheld)
             self.assertEqual(first['track_key'], second['track_key'])
@@ -190,10 +190,44 @@ class DeviceFileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             messages = Path(tmp) / 'shared_messages.json'
             messages.write_text('{}', encoding='utf-8')
-            answers = iter(['Kid', 'K1', 'y', 'nope'])
+            answers = iter(['Kid', 'K1', 'y', 'n', 'nope'])
             with patch.object(c, 'SHARED_MESSAGES', messages), patch('builtins.input', lambda _: next(answers)):
                 with self.assertRaises(ValueError):
                     c.prompt_device(Path(tmp) / '1-handheld.json')
+
+    def test_gps_handheld_created_as_its_own_beacon(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            handheld = Path(tmp) / '4-handheld.json'
+            answers = iter(['Solo Kid', 'SK', 'n', 'y', ''])
+            with patch('builtins.input', lambda _: next(answers)):
+                device = c.prompt_device(handheld)
+            self.assertTrue(device['gps'])
+            self.assertEqual(c.load_json(handheld)['gps_update_interval'], 120)
+            self.assertIn('family_key', device)
+            shared = {'group_name': 'group', 'group_key': 'ef' * 32, 'track_name': 'track'}
+            plan = [(idx, label, precision) for idx, label, _, _, precision
+                    in c.channel_plan('handheld', device, shared)]
+            self.assertEqual(plan, [(0, 'track', 32), (1, 'family', 0), (2, 'group', 0)])
+
+    def test_plain_handheld_stays_silent_about_position(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            handheld = Path(tmp) / '5-handheld.json'
+            answers = iter(['Kid', 'K1', 'n', 'n', ''])
+            with patch('builtins.input', lambda _: next(answers)):
+                device = c.prompt_device(handheld)
+            self.assertNotIn('gps', device)
+            self.assertNotIn('gps_update_interval', device)
+
+    def test_load_device_validates_gps_handheld_interval(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / '6-handheld.json'
+            base = ('{"track_key":"aa","family_key":"bb","long_name":"x","short_name":"x",'
+                    '"bluetooth":false,"canned":null,"gps":true')
+            path.write_text(base + ',"gps_update_interval":-5}', encoding='utf-8')
+            with self.assertRaises(ValueError):
+                c.load_device(path)
+            path.write_text(base + '}', encoding='utf-8')
+            self.assertEqual(c.load_device(path)['gps_update_interval'], 120)
 
     def test_load_device_requires_family_key_on_handheld(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -312,6 +346,25 @@ class ApplyAllTests(unittest.TestCase):
         self.assertEqual(iface.localNode.localConfig.position.gps_update_interval, 120)
         self.assertTrue(c.channel_matches(iface.localNode, 0, 'track', bytes.fromhex('ab' * 32), 32))
         self.assertFalse(iface.localNode.localConfig.bluetooth.enabled)
+
+    def test_gps_handheld_applies_interval_and_full_precision_with_all_channels(self):
+        device = {'track_key': 'ab' * 32, 'family_key': 'cd' * 32, 'long_name': 'Solo', 'short_name': 'S1',
+                  'bluetooth': False, 'canned': None, 'gps': True}
+        calls, iface = self.run_apply('handheld', device, self.shared())
+        self.assertEqual(calls, ['profile', 'buzzer_pin', 'buzzer_notifications', 'gps_interval',
+                                 'channel', 'channel', 'channel', 'name', 'bluetooth'])
+        self.assertEqual(iface.localNode.localConfig.position.gps_update_interval, 120)
+        self.assertTrue(c.channel_matches(iface.localNode, 0, 'track', bytes.fromhex('ab' * 32), 32))
+        self.assertTrue(c.channel_matches(iface.localNode, 1, 'family', bytes.fromhex('cd' * 32), 0))
+        self.assertTrue(c.channel_matches(iface.localNode, 2, 'group', bytes.fromhex('ef' * 32), 0))
+
+    def test_invalid_interval_on_gps_handheld_aborts_before_any_write(self):
+        device = {'track_key': 'ab' * 32, 'family_key': 'cd' * 32, 'long_name': 'S', 'short_name': 'S',
+                  'bluetooth': False, 'canned': None, 'gps': True, 'gps_update_interval': 'soon'}
+        with patch.object(c, 'reconnect_serial') as reconnect:
+            with self.assertRaises(ValueError):
+                c.apply_all('x', 'handheld', device, self.shared())
+            reconnect.assert_not_called()
 
     def test_buzzer_configuration_survives_protobuf_roundtrip(self):
         original = Node()

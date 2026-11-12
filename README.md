@@ -29,15 +29,19 @@ lists available serial ports: select the intended device explicitly.
 
 ## Devices, files, and channels
 
-Each child *n* owns a **pair** of devices, configured by two files:
+Each child *n* owns **one or two** devices, configured by files:
 
-- `<n>-handheld.json` — the device **in the child's hand** (no GPS). The kid
-  takes this one home.
-- `<n>-beacon.json` — the **GPS beacon** (position source).
+- `<n>-handheld.json` — the device **in the child's hand**. The kid takes
+  this one home. If the board has GPS, say **yes** to the GPS question at
+  creation (or add `"gps": true` by hand): the device then shares its
+  position on the track channel with full precision **and** keeps family
+  and group — a **one-device** tracker that is its own beacon.
+- `<n>-beacon.json` — the dedicated **GPS beacon** (position source). Only
+  for kids who get two devices; a one-device child never creates this file.
 
 | Channel | Key | Stored in | beacon (GPS) | handheld (child) |
 |---|---|---|---|---|
-| **track** (primary) | unique per pair | both pair files | idx 0, position precision 32 | idx 0, precision 0 |
+| **track** (primary) | unique per pair | both pair files | idx 0, position precision 32 | idx 0, precision 0 — **32 with `"gps": true`** |
 | **family** | unique per family, auto-generated | `<n>-handheld.json` | — | idx 1 |
 | **group** | one workshop-wide key | `shared.json` only | — | idx 2 |
 | **public** (optional) | well-known default key | network-wide switch | idx 1 if on | idx 3 if on |
@@ -54,16 +58,19 @@ Each child *n* owns a **pair** of devices, configured by two files:
 - `<n>-*.json` — the pair's properties: names, Bluetooth, canned set key,
   and the pair's private `track_key` (identical in both files, generated
   automatically when the first file is created; the sibling inherits it).
-  The handheld file additionally holds the auto-generated `family_key`.
-  Beacon files also contain `gps_update_interval` in seconds, initially 120.
-  Edit this integer in the beacon file to change what Apply all writes; older
+  The handheld file additionally holds the auto-generated `family_key`, and
+  `"gps": true` when the child's device shares its position (one-device
+  mode). Beacon files and `"gps": true` handheld files also contain
+  `gps_update_interval` in seconds, initially 120.
+  Edit this integer in the device file to change what Apply all writes; older
   beacon files use 120 when the field is absent and save it after a successful
   application. A value of 0 uses the firmware default. Rotary changes affect
   the device, but Apply all restores the value from the file.
 
-First run for a missing file asks names, Bluetooth and an optional canned
-set key, then stores the JSON. Prepare all files in advance — on the
-workshop PC you then only connect each device and apply.
+First run for a missing file asks names, Bluetooth, for a handheld whether
+it has GPS, and an optional canned set key, then stores the JSON. Prepare
+all files in advance — on the workshop PC you then only connect each device
+and apply.
 
 ## Setting up `local/` from scratch
 
@@ -132,8 +139,10 @@ picks which set a device gets.
     **INTERACTIVE CLIENT** (screen wakes on rotary, normal cycles, 15-minute
     broadcast period) and **STEALTH TRACKER** (dark screen, sleepy low-power
     cycles, deaf between wakes, **30-minute wake period**). Confirmed before
-    writing; read-back verified. Beacons only — handhelds have no GPS and
-    cannot use this mode. `Apply all` does not change the power mode; run 12
+    writing; read-back verified. **Beacon files only** — never enable
+    stealth on a one-device tracker: a sleepy beacon is deaf between wakes,
+    which would make the child's group chat arrive late or not at all.
+    `Apply all` does not change the power mode; run 12
     again to switch back.
 0. Exit.
 

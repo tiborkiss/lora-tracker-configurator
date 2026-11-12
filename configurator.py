@@ -8,15 +8,21 @@ Configuration lives beside this script, never in the current directory.
   frequency slot and whether the public channel is enabled.
 - local/shared_messages.json — canned message sets, keyed by a short name.
   Device JSONs reference a set by key; edit this file with a text editor.
-- local/<n>-handheld.json — the device in the child's hand (no GPS). Carries
-  the pair's track key, the family's own key, and the group channel.
+- local/<n>-handheld.json — the device in the child's hand. Carries the
+  pair's track key, the family's own key, and the group channel. With
+  "gps": true the board also broadcasts its position on the track
+  channel (one-device mode: the kid's device is its own beacon).
 - local/<n>-beacon.json — the GPS beacon (position source). Carries the same
   pair track key. Pair keys are unique per <n>; different pairs cannot
   decode each other.
 
-Channel layout: track is primary on both devices (position precision 32 on
-the beacon); family and group are secondaries on the handheld;
-the optional public channel is a secondary with the well-known default key.
+Channel layout: track is primary on both devices (position precision 32
+when the device carries GPS); family and group are secondaries on the
+handheld; the optional public channel is a secondary with the well-known
+default key. A child with a single GPS-capable device uses only the
+handheld file with "gps": true; the beacon file stays reserved for a
+dedicated pair device — the sleepy/stealth mode it enables would make
+the device deaf to group messages between wakes.
 """
 
 import base64
@@ -129,7 +135,7 @@ def load_device(path):
     for field in required:
         if field not in config:
             raise ValueError(f'{path.name} is missing {field}')
-    if kind == 'beacon':
+    if kind == 'beacon' or config.get('gps'):
         config.setdefault('gps_update_interval', DEFAULT_GPS_UPDATE_INTERVAL)
         gps_update_interval(config)
     return config
@@ -152,10 +158,21 @@ def prompt_device(path):
     state = ask('Enable Bluetooth? [y/n]: ').strip().lower()
     if state not in ('y', 'n'):
         raise ValueError('Enter y or n')
+    bluetooth = state == 'y'
+    gps = None
+    if kind == 'handheld':
+        state = ask('Does this device have GPS and should it share its position? [y/n]: ').strip().lower()
+        if state not in ('y', 'n'):
+            raise ValueError('Enter y or n')
+        gps = state == 'y'
     config = {'track_key': track_key, 'long_name': long_name, 'short_name': short_name,
-              'bluetooth': state == 'y', 'canned': None}
+              'bluetooth': bluetooth, 'canned': None}
     if kind == 'handheld':
         config['family_key'] = secrets.token_hex(32)
+        if gps:
+            config['gps'] = True
+            config['gps_update_interval'] = DEFAULT_GPS_UPDATE_INTERVAL
+            print('One-device mode: this handheld is its own beacon; keep it out of stealth so group chat stays live.')
         print('A new family key was generated; export the family QR for the parents (menu 4).')
     else:
         config['gps_update_interval'] = DEFAULT_GPS_UPDATE_INTERVAL
@@ -320,11 +337,6 @@ def profile_matches(node, slot):
             (events.RIGHT, events.LEFT, events.SELECT))
 
 
-def set_gps_update_interval(node, interval):
-    node.localConfig.position.gps_update_interval = interval
-    node.writeConfig('position')
-
-
 def set_buzzer_pin(node):
     node.localConfig.device.buzzer_gpio = 3  # P0.03
     node.writeConfig('device')
@@ -423,7 +435,7 @@ def set_canned(iface, messages):
 def channel_plan(kind, device, shared):
     """(index, label, name, key, precision) for one device kind, in order."""
     plan = [(0, 'track', shared['track_name'], get_key(device, 'track_key'),
-             32 if kind == 'beacon' else 0)]
+             32 if kind == 'beacon' or device.get('gps') else 0)]
     if kind == 'handheld':
         plan.append((1, FAMILY_NAME, FAMILY_NAME, get_key(device, 'family_key'), 0))
         plan.append((2, 'group', shared['group_name'], get_key(shared, 'group_key'), 0))
@@ -624,7 +636,8 @@ def apply_all(serial, kind, device, shared):
     """Apply every property of the device file (plus shared settings) to the
     device with this USB serial; the port path is re-resolved per step."""
     slot = shared['frequency_slot']
-    interval = gps_update_interval(device) if kind == 'beacon' else None
+    has_gps = kind == 'beacon' or bool(device.get('gps'))
+    interval = gps_update_interval(device) if has_gps else None
     steps = [('radio/rotary profile',
               lambda i: update_profile(i.localNode, slot),
               lambda i: profile_matches(i.localNode, slot)),
@@ -634,7 +647,7 @@ def apply_all(serial, kind, device, shared):
              ('buzzer notifications',
               lambda i: set_buzzer_notifications(i.localNode),
               lambda i: buzzer_notifications_match(i.localNode))]
-    if kind == 'beacon':
+    if interval is not None:
         steps.append(('GPS update interval', None, None))
     for index, label, name, key, precision in channel_plan(kind, device, shared):
         steps.append((f'{label} channel',
