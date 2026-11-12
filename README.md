@@ -65,6 +65,30 @@ First run for a missing file asks names, Bluetooth and an optional canned
 set key, then stores the JSON. Prepare all files in advance — on the
 workshop PC you then only connect each device and apply.
 
+## Setting up `local/` from scratch
+
+The whole `local/` folder is gitignored — device keys and channel secrets
+never leave your machine — so a fresh clone ships with no configuration.
+Create the folder beside `configurator.py` and let the menu generate most
+of it: run menu **1** once to create `shared.json` with the group key, and
+first-run prompts create the `<n>-handheld.json` / `<n>-beacon.json` files.
+
+The one file you write by hand is `local/shared_messages.json`: the canned
+message sets the menu selects from. It is a JSON object mapping a short set
+name to the messages joined with `|` (the separator is stored as-is, so `|`
+cannot appear inside a message):
+
+```json
+{
+  "workshop": "Hi!|Help!|Where are you?|On my way|Coming now|Found you|See you later|Yes|No"
+}
+```
+
+Each set may hold at most 50 messages and the whole joined string must fit
+in 200 UTF-8 bytes (the firmware's canned-message storage limit). Device
+files reference a set by its key; menu **7** (or the first-run prompt)
+picks which set a device gets.
+
 ## Menu
 
 1. **Create group key (once)** — stored in `shared.json` before use.
