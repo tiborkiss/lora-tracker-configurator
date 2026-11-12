@@ -230,13 +230,13 @@ def pair_url(node, key):
     return url
 
 
-def family_url(device, shared):
-    """Build the family-channel URL offline from <n>-handheld.json."""
+def channel_url(name, key, shared):
+    """Offline ChannelSet URL with one named channel plus our radio profile."""
     from meshtastic.protobuf import apponly_pb2, config_pb2
     channels = apponly_pb2.ChannelSet()
     settings = channels.settings.add()
-    settings.name = FAMILY_NAME
-    settings.psk = get_key(device, 'family_key')
+    settings.name = name
+    settings.psk = key
     settings.uplink_enabled = False
     settings.downlink_enabled = False
     channels.lora_config.region = config_pb2.Config.LoRaConfig.EU_868
@@ -244,6 +244,16 @@ def family_url(device, shared):
     channels.lora_config.modem_preset = config_pb2.Config.LoRaConfig.LONG_FAST
     channels.lora_config.channel_num = shared['frequency_slot']
     return 'https://meshtastic.org/e/#' + base64.urlsafe_b64encode(channels.SerializeToString()).decode().rstrip('=')
+
+
+def family_url(device, shared):
+    """Build the family-channel URL offline from <n>-handheld.json."""
+    return channel_url(FAMILY_NAME, get_key(device, 'family_key'), shared)
+
+
+def group_url(shared):
+    """Build the group-channel URL offline from shared.json — no device needed."""
+    return channel_url(shared['group_name'], get_key(shared, 'group_key'), shared)
 
 
 def store_qr(url, image_path, replace=False):
@@ -885,7 +895,8 @@ def main(argv=None):
             print('1 Create group key (once)  2 Configure channel  3 Export track QR  4 Export family QR')
             print('5 Change name  6 Bluetooth on/off  7 Canned messages selector  8 Radio/rotary profile')
             print('9 Enter DFU mode  10 Apply all (this device)  11 Apply all (pair, auto-detect)')
-            print('12 Power mode (beacon)  0 Exit')
+            print('12 Power mode (beacon)  13 Export group QR (no device needed)')
+            print('0 Exit')
             try:
                 choice = ask('Choice: ').strip()
                 if choice == '0':
@@ -1016,6 +1027,14 @@ def main(argv=None):
                                      lambda i: stealth_mode_matches(i, stealth), settle_seconds=12)
                     print('Power mode applied and read-back verified.'
                           ' Apply all does not change it; run this action again to switch back.')
+                elif choice == '13':
+                    image_path = LOCAL / 'group-qr.png'
+                    replace = image_path.exists()
+                    if replace and not confirmed('Replace the existing group QR?'):
+                        continue
+                    store_qr(group_url(shared), image_path, replace=replace)
+                    print('Saved group QR to', image_path,
+                          '(contains the group secret — share it only inside the workshop).')
                 elif choice == '11':
                     anchor = session['path'] or candidates['beacon']
                     for path in (anchor, sibling_path(anchor)):

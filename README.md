@@ -147,6 +147,11 @@ picks which set a device gets.
     which would make the child's group chat arrive late or not at all.
     `Apply all` does not change the power mode; run 12
     again to switch back.
+13. **Export group QR (no device needed)** — writes `local/group-qr.png`
+    offline from `shared.json`: the group name, the workshop-wide group key,
+    and the radio profile. It lets another device join the **group** channel
+    only (no track, no family, no position). The QR carries a secret — share
+    it inside the workshop, not publicly.
 0. Exit.
 
 Every write reconnects and reads back; a mismatch is reported as an error but

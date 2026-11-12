@@ -301,6 +301,16 @@ class FamilyUrlTests(unittest.TestCase):
         self.assertEqual(payload.lora_config.region, config_pb2.Config.LoRaConfig.EU_868)
         self.assertEqual(payload.lora_config.channel_num, 1)
 
+    def test_group_url_carries_group_channel_and_radio_without_device(self):
+        shared = {'group_name': 'group', 'group_key': 'ef' * 32, 'track_name': 'track', 'frequency_slot': 2}
+        fragment = c.group_url(shared).split('#')[1]
+        payload = apponly_pb2.ChannelSet()
+        payload.ParseFromString(base64.urlsafe_b64decode(fragment + '=' * (-len(fragment) % 4)))
+        self.assertEqual(len(payload.settings), 1)
+        self.assertEqual(payload.settings[0].name, 'group')
+        self.assertEqual(bytes(payload.settings[0].psk), bytes.fromhex('ef' * 32))
+        self.assertEqual(payload.lora_config.channel_num, 2)
+
 
 class ApplyAllTests(unittest.TestCase):
     def shared(self, public=False):
