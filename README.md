@@ -54,7 +54,8 @@ Each child *n* owns **one or two** devices, configured by files:
   the others hears nobody.
 - `shared_messages.json` — canned message sets, keyed by a short name
   (`{"workshop": "Hi|Help|Found you"}`). Edit with a text editor; the menu
-  only selects a set by key.
+  only selects a set by key. **Every device file must reference one set** —
+  with no set the rotary cannot send messages.
 - `<n>-*.json` — the pair's properties: names, Bluetooth, canned set key,
   and the pair's private `track_key` (identical in both files, generated
   automatically when the first file is created; the sibling inherits it).
@@ -68,9 +69,9 @@ Each child *n* owns **one or two** devices, configured by files:
   the device, but Apply all restores the value from the file.
 
 First run for a missing file asks names, Bluetooth, for a handheld whether
-it has GPS, and an optional canned set key, then stores the JSON. Prepare
-all files in advance — on the workshop PC you then only connect each device
-and apply.
+it has GPS, and a canned set key (**required** — a device without a set
+would have a useless rotary), then stores the JSON. Prepare all files in
+advance — on the workshop PC you then only connect each device and apply.
 
 ## Setting up `local/` from scratch
 
@@ -81,7 +82,9 @@ of it: run menu **1** once to create `shared.json` with the group key, and
 first-run prompts create the `<n>-handheld.json` / `<n>-beacon.json` files.
 
 The one file you write by hand is `local/shared_messages.json`: the canned
-message sets the menu selects from. It is a JSON object mapping a short set
+message sets the menu selects from. Define it **before creating device
+files** — creation requires a set, since a device with no canned set has a
+useless rotary. It is a JSON object mapping a short set
 name to the messages joined with `|` (the separator is stored as-is, so `|`
 cannot appear inside a message):
 

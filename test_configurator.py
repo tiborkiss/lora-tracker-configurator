@@ -164,8 +164,8 @@ class DeviceFileTests(unittest.TestCase):
             with patch.object(c, 'SHARED_MESSAGES', messages), patch('builtins.input', lambda _: next(answers)):
                 device = c.prompt_device(handheld)
             self.assertEqual(device['canned'], 'workshop')
-            answers = iter(['Beacon Two', 'B2', 'n', ''])
-            with patch('builtins.input', lambda _: next(answers)):
+            answers = iter(['Beacon Two', 'B2', 'n', 'workshop'])
+            with patch.object(c, 'SHARED_MESSAGES', messages), patch('builtins.input', lambda _: next(answers)):
                 other = c.prompt_device(beacon)
             self.assertEqual(other['track_key'], device['track_key'])
             self.assertNotIn('family_key', other)
@@ -177,11 +177,13 @@ class DeviceFileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             beacon = Path(tmp) / '7-beacon.json'
             handheld = Path(tmp) / '7-handheld.json'
-            answers = iter(['Beacon', 'BCN', 'y', ''])
-            with patch('builtins.input', lambda _: next(answers)):
+            messages = Path(tmp) / 'shared_messages.json'
+            messages.write_text('{"workshop": "hi|ho"}', encoding='utf-8')
+            answers = iter(['Beacon', 'BCN', 'y', 'workshop'])
+            with patch.object(c, 'SHARED_MESSAGES', messages), patch('builtins.input', lambda _: next(answers)):
                 first = c.prompt_device(beacon)
-            answers = iter(['Kid', 'KID', 'n', 'n', ''])
-            with patch('builtins.input', lambda _: next(answers)):
+            answers = iter(['Kid', 'KID', 'n', 'n', 'workshop'])
+            with patch.object(c, 'SHARED_MESSAGES', messages), patch('builtins.input', lambda _: next(answers)):
                 second = c.prompt_device(handheld)
             self.assertEqual(first['track_key'], second['track_key'])
             self.assertIn('family_key', second)
@@ -189,8 +191,27 @@ class DeviceFileTests(unittest.TestCase):
     def test_unknown_canned_set_rejected_at_creation(self):
         with tempfile.TemporaryDirectory() as tmp:
             messages = Path(tmp) / 'shared_messages.json'
-            messages.write_text('{}', encoding='utf-8')
+            messages.write_text('{"workshop": "hi"}', encoding='utf-8')
             answers = iter(['Kid', 'K1', 'y', 'n', 'nope'])
+            with patch.object(c, 'SHARED_MESSAGES', messages), patch('builtins.input', lambda _: next(answers)):
+                with self.assertRaises(ValueError):
+                    c.prompt_device(Path(tmp) / '1-handheld.json')
+
+    def test_empty_canned_set_rejected_at_creation(self):
+        # a device without a canned set has a useless rotary — the answer must not be empty
+        with tempfile.TemporaryDirectory() as tmp:
+            messages = Path(tmp) / 'shared_messages.json'
+            messages.write_text('{"workshop": "hi"}', encoding='utf-8')
+            answers = iter(['Kid', 'K1', 'y', 'n', ''])
+            with patch.object(c, 'SHARED_MESSAGES', messages), patch('builtins.input', lambda _: next(answers)):
+                with self.assertRaises(ValueError):
+                    c.prompt_device(Path(tmp) / '1-handheld.json')
+
+    def test_creation_without_any_canned_set_aborts_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            messages = Path(tmp) / 'shared_messages.json'
+            messages.write_text('{}', encoding='utf-8')
+            answers = iter(['Kid', 'K1', 'y', 'n'])
             with patch.object(c, 'SHARED_MESSAGES', messages), patch('builtins.input', lambda _: next(answers)):
                 with self.assertRaises(ValueError):
                     c.prompt_device(Path(tmp) / '1-handheld.json')
@@ -198,8 +219,10 @@ class DeviceFileTests(unittest.TestCase):
     def test_gps_handheld_created_as_its_own_beacon(self):
         with tempfile.TemporaryDirectory() as tmp:
             handheld = Path(tmp) / '4-handheld.json'
-            answers = iter(['Solo Kid', 'SK', 'n', 'y', ''])
-            with patch('builtins.input', lambda _: next(answers)):
+            messages = Path(tmp) / 'shared_messages.json'
+            messages.write_text('{"workshop": "hi"}', encoding='utf-8')
+            answers = iter(['Solo Kid', 'SK', 'n', 'y', 'workshop'])
+            with patch.object(c, 'SHARED_MESSAGES', messages), patch('builtins.input', lambda _: next(answers)):
                 device = c.prompt_device(handheld)
             self.assertTrue(device['gps'])
             self.assertEqual(c.load_json(handheld)['gps_update_interval'], 120)
@@ -212,8 +235,10 @@ class DeviceFileTests(unittest.TestCase):
     def test_plain_handheld_stays_silent_about_position(self):
         with tempfile.TemporaryDirectory() as tmp:
             handheld = Path(tmp) / '5-handheld.json'
-            answers = iter(['Kid', 'K1', 'n', 'n', ''])
-            with patch('builtins.input', lambda _: next(answers)):
+            messages = Path(tmp) / 'shared_messages.json'
+            messages.write_text('{"workshop": "hi"}', encoding='utf-8')
+            answers = iter(['Kid', 'K1', 'n', 'n', 'workshop'])
+            with patch.object(c, 'SHARED_MESSAGES', messages), patch('builtins.input', lambda _: next(answers)):
                 device = c.prompt_device(handheld)
             self.assertNotIn('gps', device)
             self.assertNotIn('gps_update_interval', device)
@@ -240,7 +265,7 @@ class DeviceFileTests(unittest.TestCase):
     def test_existing_beacon_default_is_saved_after_success_and_edits_survive(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / '3-beacon.json'
-            path.write_text('{"track_key":"aa", "long_name":"x", "short_name":"x", "bluetooth":true}',
+            path.write_text('{"track_key":"aa", "long_name":"x", "short_name":"x", "bluetooth":true, "canned":null}',
                             encoding='utf-8')
             device = c.load_device(path)
             self.assertEqual(device['gps_update_interval'], 120)
@@ -286,6 +311,10 @@ class ApplyAllTests(unittest.TestCase):
         calls = []
         iface = FakeIface()
         node = iface.localNode
+        msgdir = tempfile.TemporaryDirectory()
+        self.addCleanup(msgdir.cleanup)
+        messages = Path(msgdir.name) / 'shared_messages.json'
+        messages.write_text('{"workshop": "hi"}', encoding='utf-8')
 
         def set_owner(long_name, short_name):
             calls.append('name')
@@ -311,6 +340,7 @@ class ApplyAllTests(unittest.TestCase):
             self.assertEqual(iface.localNode.localConfig.position.gps_update_interval, interval)
 
         with patch.object(c, 'connect', return_value=iface), \
+             patch.object(c, 'SHARED_MESSAGES', messages), \
              patch.object(c, 'reconnect_serial', fake_reconnect), \
              patch.object(c, 'apply_gps_interval', fake_apply_gps), \
              patch('time.sleep'), \
@@ -340,19 +370,21 @@ class ApplyAllTests(unittest.TestCase):
         self.assertEqual(iface.getCannedMessage(), 'hi')
 
     def test_beacon_skips_group_and_uses_full_precision(self):
-        device = {'track_key': 'ab' * 32, 'long_name': 'BCN', 'short_name': 'BCN', 'bluetooth': False, 'canned': None}
+        device = {'track_key': 'ab' * 32, 'long_name': 'BCN', 'short_name': 'BCN', 'bluetooth': False,
+                  'canned': 'workshop'}
         calls, iface = self.run_apply('beacon', device, self.shared())
-        self.assertEqual(calls, ['profile', 'buzzer_pin', 'buzzer_notifications', 'gps_interval', 'channel', 'name', 'bluetooth'])
+        self.assertEqual(calls, ['profile', 'buzzer_pin', 'buzzer_notifications', 'gps_interval', 'channel',
+                                 'name', 'bluetooth', 'canned'])
         self.assertEqual(iface.localNode.localConfig.position.gps_update_interval, 120)
         self.assertTrue(c.channel_matches(iface.localNode, 0, 'track', bytes.fromhex('ab' * 32), 32))
         self.assertFalse(iface.localNode.localConfig.bluetooth.enabled)
 
     def test_gps_handheld_applies_interval_and_full_precision_with_all_channels(self):
         device = {'track_key': 'ab' * 32, 'family_key': 'cd' * 32, 'long_name': 'Solo', 'short_name': 'S1',
-                  'bluetooth': False, 'canned': None, 'gps': True}
+                  'bluetooth': False, 'canned': 'workshop', 'gps': True}
         calls, iface = self.run_apply('handheld', device, self.shared())
         self.assertEqual(calls, ['profile', 'buzzer_pin', 'buzzer_notifications', 'gps_interval',
-                                 'channel', 'channel', 'channel', 'name', 'bluetooth'])
+                                 'channel', 'channel', 'channel', 'name', 'bluetooth', 'canned'])
         self.assertEqual(iface.localNode.localConfig.position.gps_update_interval, 120)
         self.assertTrue(c.channel_matches(iface.localNode, 0, 'track', bytes.fromhex('ab' * 32), 32))
         self.assertTrue(c.channel_matches(iface.localNode, 1, 'family', bytes.fromhex('cd' * 32), 0))
@@ -365,6 +397,17 @@ class ApplyAllTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 c.apply_all('x', 'handheld', device, self.shared())
             reconnect.assert_not_called()
+
+    def test_apply_all_requires_a_canned_set(self):
+        # rotary without the canned module enabled cannot send anything — refuse to apply
+        device = {'track_key': 'ab' * 32, 'family_key': 'cd' * 32, 'long_name': 'K', 'short_name': 'K',
+                  'bluetooth': False, 'canned': None}
+        with patch.object(c, 'reconnect_serial') as reconnect, \
+             patch.object(c, 'apply_gps_interval') as gps:
+            with self.assertRaises(ValueError):
+                c.apply_all('x', 'handheld', device, self.shared())
+            reconnect.assert_not_called()
+            gps.assert_not_called()
 
     def test_buzzer_configuration_survives_protobuf_roundtrip(self):
         original = Node()
@@ -379,9 +422,11 @@ class ApplyAllTests(unittest.TestCase):
         self.assertTrue(c.buzzer_notifications_match(readback))
 
     def test_public_channel_applied_when_enabled(self):
-        device = {'track_key': 'ab' * 32, 'long_name': 'BCN', 'short_name': 'BCN', 'bluetooth': False, 'canned': None}
+        device = {'track_key': 'ab' * 32, 'long_name': 'BCN', 'short_name': 'BCN', 'bluetooth': False,
+                  'canned': 'workshop'}
         calls, iface = self.run_apply('beacon', device, self.shared(public=True))
-        self.assertEqual(calls, ['profile', 'buzzer_pin', 'buzzer_notifications', 'gps_interval', 'channel', 'public', 'name', 'bluetooth'])
+        self.assertEqual(calls, ['profile', 'buzzer_pin', 'buzzer_notifications', 'gps_interval', 'channel',
+                                 'public', 'name', 'bluetooth', 'canned'])
         self.assertTrue(c.public_channel_matches(iface.localNode, c.public_index('beacon')))
 
     def test_missing_group_key_aborts_before_any_write(self):
@@ -396,7 +441,7 @@ class ApplyAllTests(unittest.TestCase):
 
     def test_edited_interval_is_applied_and_other_position_fields_preserved(self):
         device = {'track_key': 'ab' * 32, 'long_name': 'BCN', 'short_name': 'BCN', 'bluetooth': False,
-                  'canned': None, 'gps_update_interval': 300}
+                  'canned': 'workshop', 'gps_update_interval': 300}
         _, iface = self.run_apply('beacon', device, self.shared())
         self.assertEqual(iface.localNode.localConfig.position.gps_update_interval, 300)
         node = Node()

@@ -7,7 +7,8 @@ Configuration lives beside this script, never in the current directory.
   (generated once for the whole workshop), the track channel name, the
   frequency slot and whether the public channel is enabled.
 - local/shared_messages.json — canned message sets, keyed by a short name.
-  Device JSONs reference a set by key; edit this file with a text editor.
+  Device JSONs reference a set by key (required: the rotary can only send
+  when a set is assigned); edit this file with a text editor.
 - local/<n>-handheld.json — the device in the child's hand. Carries the
   pair's track key, the family's own key, and the group channel. With
   "gps": true the board also broadcasts its position on the track
@@ -128,7 +129,7 @@ def sibling_path(path):
 
 def load_device(path):
     config = load_json(path)
-    required = ['track_key', 'long_name', 'short_name', 'bluetooth']
+    required = ['track_key', 'long_name', 'short_name', 'bluetooth', 'canned']
     kind = device_kind(path)
     if kind == 'handheld':
         required.append('family_key')
@@ -176,11 +177,15 @@ def prompt_device(path):
         print('A new family key was generated; export the family QR for the parents (menu 4).')
     else:
         config['gps_update_interval'] = DEFAULT_GPS_UPDATE_INTERVAL
-    canned = ask('Canned set key from shared_messages.json (empty for none): ').strip()
-    if canned:
-        if canned not in load_shared_messages():
-            raise ValueError(f'No canned set "{canned}" in shared_messages.json')
-        config['canned'] = canned
+    sets = load_shared_messages()
+    if not sets:
+        raise ValueError('Define canned sets in local/shared_messages.json first — every device '
+                         'needs one or the child cannot send messages with the rotary')
+    print('Canned sets available:', ', '.join(sorted(sets)))
+    canned = ask('Canned set key from shared_messages.json: ').strip()
+    if canned not in sets:
+        raise ValueError(f'No canned set "{canned}" in shared_messages.json — every device needs one')
+    config['canned'] = canned
     save_device(path, config)
     print('Saved', path.name)
     return config
@@ -667,11 +672,13 @@ def apply_all(serial, kind, device, shared):
                   lambda i: set_bluetooth(i, enabled),
                   lambda i: bluetooth_matches(i, enabled)))
     messages = resolve_canned(device)
-    if messages:
-        steps.append(('canned messages',
-                      lambda i: set_canned(i, messages),
-                      lambda i: i.localNode.moduleConfig.canned_message.enabled and
-                      i.getCannedMessage() == messages))
+    if not messages:
+        raise ValueError('The device file references no canned set, so the rotary could not send '
+                         'messages — pick a set first (menu 7), then apply again')
+    steps.append(('canned messages',
+                  lambda i: set_canned(i, messages),
+                  lambda i: i.localNode.moduleConfig.canned_message.enabled and
+                  i.getCannedMessage() == messages))
     for label, action, verify in steps:
         print('Applying', label, '…')
         if label == 'GPS update interval':
